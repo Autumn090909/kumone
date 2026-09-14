@@ -5,6 +5,7 @@ struct MainWindow: View {
 #if os(macOS)
     @Environment(\.openWindow) private var openWindow
 #endif
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
     @EnvironmentObject private var settings: SettingsManager
@@ -95,7 +96,8 @@ struct MainWindow: View {
                     showsTitlebarAmbientBackground: !player.showNowPlaying,
                     colors: artworkStore.colors,
                     mainColumnWidth: detailWidth,
-                    intensity: settings.mainWindowAmbientBackgroundIntensity
+                    intensity: settings.mainWindowAmbientBackgroundIntensity,
+                    isDark: isDarkAppearance
                 )
             )
         )
@@ -250,6 +252,10 @@ struct MainWindow: View {
     #if os(macOS)
     private var needsCurrentArtwork: Bool {
         settings.showMainWindowAmbientBackground || player.showNowPlaying
+    }
+
+    private var isDarkAppearance: Bool {
+        (settings.appearance.colorScheme ?? colorScheme) == .dark
     }
     #endif
 }

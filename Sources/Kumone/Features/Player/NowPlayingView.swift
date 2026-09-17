@@ -682,24 +682,25 @@ struct NowPlayingView: View {
     }
 
     private func artworkSurface(size: CGFloat) -> some View {
-        Group {
+        ZStack {
+            Rectangle()
+                .fill(.white.opacity(0.06))
+                .overlay(
+                    Image(systemName: "music.note")
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(.white.opacity(0.3))
+                )
             if let artworkImage {
                 Image(platformImage: artworkImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-            } else {
-                Rectangle()
-                    .fill(.white.opacity(0.06))
-                    .overlay(
-                        Image(systemName: "music.note")
-                            .font(.system(size: 48, weight: .light))
-                            .foregroundStyle(.white.opacity(0.3))
-                    )
+                    .transition(.opacity)
             }
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: .black.opacity(0.45), radius: 36, y: 18)
+        .animation(.easeIn(duration: 0.25), value: artworkImage != nil)
         .scaleEffect(player.isPlaying ? 1 : 0.95)
         .animation(AppAnimation.bouncy, value: player.isPlaying)
     }

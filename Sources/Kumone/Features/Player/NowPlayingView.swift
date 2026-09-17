@@ -673,6 +673,7 @@ struct NowPlayingView: View {
                     artworkSurface(size: size)
                 }
                 .buttonStyle(.plain)
+                .noFocusRing()
                 .accessibilityLabel("打开专辑：\(album.name)")
             } else {
                 artworkSurface(size: size)

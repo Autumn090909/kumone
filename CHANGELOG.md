@@ -17,6 +17,8 @@ counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单
 
 - **macOS**: the toolbar search field and the floating player bar now keep more clearance from the window's rounded corners, so their capsules no longer nearly touch the window edges and the inner/outer corner radii stop visually merging. (#88)
 - **macOS**：工具栏搜索框与悬浮播放条现在与窗口圆角保持更多间距,不再几乎贴住窗口边缘,内外圆角也不再互相干扰。（#88）
+- **macOS**: the album artwork in the player bar and the immersive now-playing page no longer shows a stray blue focus ring (macOS 27 drew the system focus ring on those decorative artwork buttons). (#97)
+- **macOS**：播放条与沉浸播放页的专辑封面不再出现多余的蓝色聚焦边框（macOS 27 会在这些装饰性封面按钮上绘制系统聚焦环）。（#97）
 
 ## 0.3.17 - 2026-09-10
 

@@ -84,13 +84,18 @@ struct PlayerBar: View {
                     }
                     .help("不喜欢，换一首")
                 } else {
+                    // One control for all three queue orders: the third state
+                    // is a *kind* of shuffle, so it lives inside the shuffle
+                    // button rather than beside it. The cycle skips it wherever
+                    // it could do nothing (iOS, AutoMix off, order off), which
+                    // leaves the familiar two-state button untouched there.
                     PlayerIconButton(
-                        icon: "shuffle", size: 12,
-                        isActive: player.shuffleEnabled
+                        icon: player.queueOrder.symbolName, size: 12,
+                        isActive: player.queueOrder != .listed
                     ) {
-                        player.toggleShuffle()
+                        player.cycleQueueOrder()
                     }
-                    .help("随机播放")
+                    .help(player.queueOrder.controlHelp)
                 }
 
                 PlayerIconButton(icon: "backward.fill", size: 14, disabled: player.isFMMode) {
@@ -208,6 +213,29 @@ struct PlayerBar: View {
 }
 
 // MARK: - Icon button
+
+/// How the one queue-order control presents each state. Here rather than on
+/// the enum itself so `QueueOrder` stays a pure Core type: three transports
+/// (this bar, the now-playing page, the Dock menu) read the same two answers.
+extension QueueOrder {
+    /// `wand.and.stars` for AutoMix: it reads as "smart shuffle" next to the
+    /// plain `shuffle` arrows, and the accent tint the button applies to any
+    /// non-listed state carries the rest.
+    var symbolName: String {
+        switch self {
+        case .listed, .shuffled: return "shuffle"
+        case .autoMix: return "wand.and.stars"
+        }
+    }
+
+    /// Tooltip / menu wording for the state the control is *in*.
+    var controlHelp: LocalizedStringKey {
+        switch self {
+        case .listed, .shuffled: return "随机播放"
+        case .autoMix: return "AutoMix 顺序"
+        }
+    }
+}
 
 struct PlayerIconButton: View {
     let icon: String

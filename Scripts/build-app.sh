@@ -51,6 +51,26 @@ fi
 mkdir -p "$APP_BUNDLE/Contents/Frameworks"
 cp -a "$SPARKLE_FW" "$APP_BUNDLE/Contents/Frameworks/"
 
+# MLX's Metal kernels, for AutoMix stem transitions. MLX loads `mlx.metallib`
+# from beside the running binary, and a Command Line Tools-only build cannot
+# produce one — Scripts/fetch-mlx-metallib.sh installs it into .build. Copy it
+# in when it is there; without it the app simply never pre-renders stem
+# hand-overs (StemKit.ResidentStemSeparator.isRunnable says no).
+METALLIB="$(find "$ROOT/.build" -name 'mlx.metallib' -print -quit 2>/dev/null || true)"
+if [ -n "$METALLIB" ]; then
+  cp "$METALLIB" "$APP_BUNDLE/Contents/MacOS/mlx.metallib"
+else
+  # Shipping without the kernels silently disables every stem hand-over and
+  # is indistinguishable from a planner bug in the field (2026-08-31: a day
+  # of "everything falls to stagedEQ" traced back to exactly this). Fail
+  # loudly instead; a clean of .build eats the metallib, and the fix is one
+  # command.
+  echo "error: mlx.metallib not found under .build — the app would ship with" >&2
+  echo "       stem separation disabled. Run Scripts/fetch-mlx-metallib.sh" >&2
+  echo "       (after 'swift build -c release --product stemtool') first." >&2
+  exit 1
+fi
+
 # Localization tables → Bundle.main
 for lproj in "$ROOT"/Sources/Kumone/Resources/*.lproj; do
   [ -d "$lproj" ] && cp -R "$lproj" "$APP_BUNDLE/Contents/Resources/"

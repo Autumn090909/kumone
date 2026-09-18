@@ -90,7 +90,10 @@ final class NowPlayingManager {
             return .success
         }
 
-        player.$shuffleEnabled
+        // Shuffle is one of the queue orders on this branch (`shuffleEnabled`
+        // is derived), so observe the order and map it back to on/off.
+        player.$queueOrder
+            .map { $0 == .shuffled }
             .removeDuplicates()
             .sink { enabled in
                 center.changeShuffleModeCommand.currentShuffleType = enabled ? .items : .off

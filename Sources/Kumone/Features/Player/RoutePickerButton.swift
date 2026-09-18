@@ -10,7 +10,7 @@ import SwiftUI
 ///   an `AVAudioSession` matter, and the session is what an `AVAudioEngine`
 ///   renders through — so picking an AirPlay route in the system sheet moves
 ///   this app's audio, and the picker is the right (and only sanctioned) UI.
-/// - **macOS** shows an in-app output-device menu (`OutputDeviceMenu`).
+/// - **macOS** shows an in-app output-device picker (`OutputDevicePicker`).
 ///   `AVRoutePickerView` on the Mac routes an `AVPlayer` /
 ///   `AVSampleBufferAudioRenderer`; Kumone's playback is an AVAudioEngine
 ///   graph and has had no AVPlayer since the dual-deck engine landed, so the
@@ -28,7 +28,7 @@ struct RoutePickerButton: View {
 
     var body: some View {
         #if os(macOS)
-        OutputDeviceMenu(
+        OutputDevicePicker(
             diameter: diameter, glyphSize: glyphSize, tint: tint, background: background)
         #else
         RoutePickerRepresentable(
@@ -76,57 +76,353 @@ private struct RoutePickerRepresentable: UIViewRepresentable {
 #endif
 
 #if os(macOS)
-/// macOS output picker: 系统默认 plus every CoreAudio output device, with
-/// AirPlay endpoints grouped last and marked with the AirPlay glyph.
+import AppKit
+
+/// macOS output picker: a popover modelled on Control Centre's Sound module.
+///
+/// ```
+/// 输出设备
+/// (◉) 系统默认                  ✓     ← follows macOS; subtitle = what it resolves to
+///     Mac mini 扬声器
+/// 此 Mac
+/// (◯) Mac mini 扬声器                 ← built-in speakers / headphone jack
+/// 外接设备
+/// (◯) OF27UT Pro   HDMI               ← wired, then Bluetooth
+/// 虚拟设备                              ← only when there are any
+/// AirPlay
+///     AirPlay 音箱需先在控制中心…        ← hint, only when none are listed
+/// ─────────
+/// 声音设置…                            ← System Settings › Sound
+/// ```
+///
+/// A popover rather than a `Menu`: a menu cannot carry the explanatory hint
+/// for the empty AirPlay section, a two-line row ("系统默认" over the device
+/// it resolves to) or icon wells, and the player bar already hosts a popover
+/// (`VolumeControl`) without focus or dismissal trouble. Rows are listed
+/// from `AudioOutputDevices.sections`, which only ever contains devices that
+/// can actually be selected.
 ///
 /// "系统默认" is not a device — it follows whatever macOS is routing to, which
-/// is also how an AirPlay receiver picked in Control Centre reaches Kumone
-/// even when no 'airp' device is enumerated here.
-struct OutputDeviceMenu: View {
+/// is also how an AirPlay receiver picked in Control Centre reaches Kumone.
+struct OutputDevicePicker: View {
     var diameter: CGFloat = 40
     var glyphSize: CGFloat = 15
     var tint: Color = .white.opacity(0.8)
     var background: Color = .white.opacity(0.1)
 
     @ObservedObject private var controller = AudioOutputController.shared
-
-    private var isRouted: Bool { controller.isRoutedAway }
+    @State private var isPresented = false
+    @State private var isHovering = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Menu {
-            Button {
-                controller.select(.systemDefault)
-            } label: {
-                Label(
-                    "系统默认",
-                    systemImage: controller.selection == .systemDefault
-                        ? "checkmark" : "speaker.wave.2")
-            }
-            if !controller.devices.isEmpty {
-                Divider()
-            }
-            ForEach(controller.devices) { device in
-                Button {
-                    controller.select(.device(uid: device.uid))
-                } label: {
-                    Label(
-                        device.isAirPlay ? "\(device.name) (AirPlay)" : device.name,
-                        systemImage: controller.selection == .device(uid: device.uid)
-                            ? "checkmark" : device.symbolName)
-                }
-            }
+        Button {
+            isPresented.toggle()
         } label: {
             Image(systemName: "airplayaudio")
                 .font(.system(size: glyphSize, weight: .medium))
-                .foregroundStyle(isRouted ? Theme.accent : tint)
+                .foregroundStyle(controller.isRoutedAway ? Theme.accent : tint)
                 .frame(width: diameter, height: diameter)
-                .background(background, in: Circle())
+                .background { chrome }
                 .contentShape(Circle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .buttonStyle(.pressable)
         .frame(width: diameter, height: diameter)
+        .onHover { isHovering = $0 }
+        .animation(AppAnimation.quick, value: isHovering)
+        .popover(isPresented: $isPresented, arrowEdge: .top) {
+            OutputDevicePanel(controller: controller) { isPresented = false }
+        }
         .help("输出设备：\(controller.currentDisplayName)")
+        .accessibilityLabel("输出设备")
+        .accessibilityValue(controller.currentDisplayName)
+    }
+
+    /// Bare in the player bar (hover fill shaped like its `PlayerIconButton`
+    /// neighbours), a filled circle on the now-playing glass.
+    @ViewBuilder private var chrome: some View {
+        let lit = isHovering || isPresented
+        if background == .clear {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill((colorScheme == .dark ? Color.white : .black).opacity(lit ? 0.08 : 0))
+        } else {
+            Circle()
+                .fill(background)
+                .overlay(Circle().fill(Color.white.opacity(lit ? 0.08 : 0)))
+        }
+    }
+}
+
+/// The popover body. Hover and the arrow keys share one highlight, the way a
+/// native menu does; Return / Space picks the highlighted row, Esc closes
+/// (the popover's own behaviour), and any pick closes it.
+private struct OutputDevicePanel: View {
+    @ObservedObject var controller: AudioOutputController
+    let dismiss: () -> Void
+
+    @State private var highlighted: Row?
+    @FocusState private var focused: Bool
+
+    enum Row: Hashable {
+        case systemDefault
+        case device(uid: String)
+        case soundSettings
+    }
+
+    var body: some View {
+        let sections = AudioOutputDevices.sections(controller.devices)
+        VStack(alignment: .leading, spacing: 0) {
+            Text("输出设备")
+                .font(.system(size: 13, weight: .semibold))
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                .padding(.bottom, 6)
+
+            deviceRow(
+                .systemDefault,
+                title: Text("系统默认"),
+                subtitle: controller.systemDefaultName.map { Text(verbatim: $0) }
+                    ?? Text("跟随系统设置"),
+                symbol: "speaker.wave.2",
+                isSelected: controller.selection == .systemDefault)
+
+            ForEach(sections, id: \.group) { section in
+                sectionHeader(section.group)
+                ForEach(section.devices) { device in
+                    deviceRow(
+                        .device(uid: device.uid),
+                        title: Text(verbatim: device.name),
+                        subtitle: device.kind.transportLabel,
+                        symbol: device.symbolName,
+                        isSelected: controller.selection == .device(uid: device.uid))
+                }
+                if section.group == .airPlay, section.devices.isEmpty {
+                    Text("AirPlay 音箱需先在控制中心或“声音”设置中选择一次，才会出现在这里")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 4)
+                }
+            }
+
+            Divider()
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+
+            settingsRow
+        }
+        .padding(.bottom, 6)
+        .frame(width: 290)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focused)
+        .onKeyPress(.downArrow) { move(by: 1, in: sections); return .handled }
+        .onKeyPress(.upArrow) { move(by: -1, in: sections); return .handled }
+        .onKeyPress(.return) { activateHighlighted() }
+        .onKeyPress(.space) { activateHighlighted() }
+        .onAppear {
+            controller.refresh()
+            focused = true
+        }
+    }
+
+    // MARK: Rows
+
+    private func sectionHeader(_ group: AudioOutputGroup) -> some View {
+        Text(group.title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func deviceRow(
+        _ row: Row, title: Text, subtitle: Text?, symbol: String, isSelected: Bool
+    ) -> some View {
+        Button {
+            pick(row)
+        } label: {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(isSelected ? AnyShapeStyle(Theme.accent)
+                                         : AnyShapeStyle(Color.primary.opacity(0.1)))
+                    Image(systemName: symbol)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(isSelected ? AnyShapeStyle(.white)
+                                                    : AnyShapeStyle(.primary))
+                }
+                .frame(width: 26, height: 26)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    title
+                        .font(.system(size: 13))
+                        .lineLimit(1)
+                    if let subtitle {
+                        subtitle
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(highlight(row))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .onHover { hover(row, $0) }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var settingsRow: some View {
+        Button {
+            pick(.soundSettings)
+        } label: {
+            HStack {
+                Text("声音设置…")
+                    .font(.system(size: 13))
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(highlight(.soundSettings))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .onHover { hover(.soundSettings, $0) }
+        .accessibilityHint("打开系统设置中的“声音”")
+    }
+
+    private func highlight(_ row: Row) -> some View {
+        RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
+            .fill(Color.primary.opacity(highlighted == row ? 0.08 : 0))
+    }
+
+    // MARK: Interaction
+
+    private func hover(_ row: Row, _ inside: Bool) {
+        if inside {
+            highlighted = row
+        } else if highlighted == row {
+            highlighted = nil
+        }
+    }
+
+    private func rows(in sections: [AudioOutputSection]) -> [Row] {
+        [.systemDefault]
+            + sections.flatMap { $0.devices.map { Row.device(uid: $0.uid) } }
+            + [.soundSettings]
+    }
+
+    /// The first arrow press starts from the checked row, as a native menu
+    /// opened on its current value would.
+    private func move(by step: Int, in sections: [AudioOutputSection]) {
+        let all = rows(in: sections)
+        let anchor: Row = highlighted ?? {
+            switch controller.selection {
+            case .systemDefault: return .systemDefault
+            case .device(let uid): return .device(uid: uid)
+            }
+        }()
+        guard let index = all.firstIndex(of: anchor) else {
+            highlighted = all.first
+            return
+        }
+        if highlighted == nil {
+            highlighted = anchor
+            return
+        }
+        highlighted = all[min(max(index + step, 0), all.count - 1)]
+    }
+
+    private func activateHighlighted() -> KeyPress.Result {
+        guard let highlighted else { return .ignored }
+        pick(highlighted)
+        return .handled
+    }
+
+    private func pick(_ row: Row) {
+        dismiss()
+        switch row {
+        case .systemDefault:
+            select(.systemDefault)
+        case .device(let uid):
+            select(.device(uid: uid))
+        case .soundSettings:
+            SoundSettings.open()
+        }
+    }
+
+    /// Re-picking the current row is a no-op here: `select` always re-points
+    /// the engine, which is an audible rebuild for nothing.
+    private func select(_ selection: AudioOutputSelection) {
+        guard selection != controller.selection else { return }
+        controller.select(selection)
+    }
+}
+
+private extension AudioOutputGroup {
+    var title: LocalizedStringKey {
+        switch self {
+        case .thisMac: return "此 Mac"
+        case .external: return "外接设备"
+        case .virtual: return "虚拟设备"
+        case .airPlay: return "AirPlay"
+        }
+    }
+}
+
+private extension AudioOutputKind {
+    /// The picker's secondary line — the "类型" column of System Settings ›
+    /// Sound, for the sections whose header does not already say it.
+    var transportLabel: Text? {
+        switch self {
+        case .bluetooth: return Text("蓝牙")
+        case .usb: return Text(verbatim: "USB")
+        case .hdmi: return Text(verbatim: "HDMI")
+        case .displayPort: return Text(verbatim: "DisplayPort")
+        case .thunderbolt: return Text(verbatim: "Thunderbolt")
+        case .virtual: return Text("虚拟")
+        case .aggregate: return Text("聚合")
+        case .builtInSpeakers, .builtInHeadphones, .airPlay, .other: return nil
+        }
+    }
+}
+
+/// System Settings › Sound. The extension ID is what the Sound pane
+/// registers on macOS 13+ (`/System/Library/ExtensionKit/Extensions/
+/// Sound.appex`, `CFBundleIdentifier` = `com.apple.Sound-Settings.extension`);
+/// the legacy prefPane ID is kept as a fallback, then System Settings itself.
+@MainActor
+enum SoundSettings {
+    static let urls = [
+        "x-apple.systempreferences:com.apple.Sound-Settings.extension",
+        "x-apple.systempreferences:com.apple.preference.sound",
+    ]
+
+    static func open() {
+        for string in urls {
+            if let url = URL(string: string), NSWorkspace.shared.open(url) { return }
+        }
+        if let app = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: "com.apple.systempreferences") {
+            NSWorkspace.shared.openApplication(at: app, configuration: .init())
+        }
     }
 }
 #endif

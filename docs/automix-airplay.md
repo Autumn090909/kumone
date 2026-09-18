@@ -19,7 +19,7 @@ CoreAudio 设备层：
   （`AudioOutputDevices.current()`）。
 - 系统暴露出来的 AirPlay 接收端在这个列表里就是一台普通设备，
   `kAudioDevicePropertyTransportType` 为 `kAudioDeviceTransportTypeAirPlay`
-  （'airp'），菜单里排在最后并标注 `(AirPlay)`。
+  （'airp'），在选择器里单独归入最后的 “AirPlay” 分组。
 - 选中后把引擎输出单元指过去：`engine.outputNode.auAudioUnit.setDeviceID(_:)`
   （即 `kAudioOutputUnitProperty_CurrentDevice` 的类型化形式），
   见 `PlaybackEngine.setOutputDevice(_:)`。
@@ -30,6 +30,27 @@ CoreAudio 设备层：
 与 `Mac mini Speakers`（均为 `bltn`），没有任何 `airp` 设备 —— 因为当时没有
 选过 AirPlay 接收端。所以菜单里永远保留 **系统默认** 一项：它跟随系统路由，
 控制中心里选的 AirPlay 也就是从这条路进来的。
+
+## 选择器（`OutputDevicePicker`）
+
+按钮点开的是仿控制中心“声音”模块的 popover，而不是 `Menu`：菜单放不下
+空 AirPlay 分组的说明、“系统默认”下方的第二行，也画不了图标圆底；播放栏里
+的音量 popover 已证明 popover 在这里没有焦点/关闭问题。结构：
+
+- **系统默认**，第二行写出它此刻解析到的设备（`systemDefaultName`）；
+- **此 Mac**（内建扬声器、耳机孔 —— 靠输出 data source 'hdpn' 区分）、
+  **外接设备**（有线在前、蓝牙在后，第二行是类型：USB / HDMI / 蓝牙…）、
+  **虚拟设备**（仅在存在时）、**AirPlay**（始终存在；为空时给出一行说明：
+  需先在控制中心或“声音”设置里选一次）；
+- 底部 **声音设置…**，打开
+  `x-apple.systempreferences:com.apple.Sound-Settings.extension`
+  （即 `Sound.appex` 的 bundle ID），失败时退回旧 prefPane ID，再退回系统设置本身。
+
+只列真正能选的设备：有输出通道、未隐藏、且 `DeviceCanBeDefaultDevice`
+（输出域）不为假 —— 与“声音”设置的列表口径一致（`isOfferable`）。
+打开时刷新一次设备与默认输出，之后由 CoreAudio 监听保持实时。选中当前项
+不会再次调用 `select`（那会白白重建一次引擎图）。按钮在“明确选了别的设备”
+或“系统默认正落在 AirPlay 上”时点亮为强调色，VoiceOver 读出当前输出。
 
 ## 切换设备时发生了什么
 

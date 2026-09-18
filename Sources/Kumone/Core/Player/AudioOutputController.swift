@@ -21,6 +21,10 @@ final class AudioOutputController: ObservableObject {
     @Published private(set) var devices: [AudioOutputDevice] = []
     /// What the menu shows a checkmark against.
     @Published private(set) var selection: AudioOutputSelection = .systemDefault
+    /// What "系统默认" currently resolves to. Published separately because a
+    /// default-output change leaves `devices` untouched, and the picker's
+    /// "系统默认 · …" line and the button's highlight both depend on it.
+    @Published private(set) var defaultDeviceID: AudioDeviceID?
 
     private var state = AudioOutputSelectionState()
     /// Set by `PlayerService`; nil means "no engine yet", and the resolved
@@ -40,25 +44,42 @@ final class AudioOutputController: ObservableObject {
 
     private init() {}
 
-    /// The name shown on the button/menu label: the chosen device, or the
-    /// system default's name when following it.
-    var currentDisplayName: String {
-        switch selection {
-        case .device(let uid):
-            return devices.first { $0.uid == uid }?.name ?? String(localized: "系统默认")
-        case .systemDefault:
-            guard let id = AudioOutputDevices.defaultDeviceID(),
-                  let device = devices.first(where: { $0.id == id })
-            else { return String(localized: "系统默认") }
-            return device.name
-        }
+    /// Where the audio is actually going right now.
+    var activeDevice: AudioOutputDevice? {
+        AudioOutputDevices.activeDevice(
+            selection: selection, devices: devices, defaultID: defaultDeviceID)
     }
 
-    /// True when the audio is going somewhere other than the built-in path,
-    /// so the button can light up the way the old AirPlay glyph did.
+    /// Name of the device "系统默认" resolves to, when known.
+    var systemDefaultName: String? {
+        AudioOutputDevices.systemDefaultName(defaultID: defaultDeviceID, devices: devices)
+    }
+
+    /// The name shown on the button's tooltip / VoiceOver value: the chosen
+    /// device, or "系统默认 · <device>" when following the default.
+    var currentDisplayName: String {
+        if case .device(let uid) = selection,
+           let device = devices.first(where: { $0.uid == uid }) {
+            return device.name
+        }
+        guard let name = systemDefaultName else { return String(localized: "系统默认") }
+        return String(localized: "系统默认 · \(name)")
+    }
+
+    /// True when the button should light up; see
+    /// `AudioOutputDevices.isRoutedAway`.
     var isRoutedAway: Bool {
-        guard case .device(let uid) = selection else { return false }
-        return devices.contains { $0.uid == uid }
+        AudioOutputDevices.isRoutedAway(
+            selection: selection, devices: devices, defaultID: defaultDeviceID)
+    }
+
+    /// Re-read the device list and the default output — called when the
+    /// picker opens. The CoreAudio listeners keep both current while it stays
+    /// open; this only covers anything that happened before `attach`, or a
+    /// listener that CoreAudio was slow to fire. Does not touch the selection
+    /// or the engine: reconciling a vanished device stays the listener's job.
+    func refresh() {
+        refreshDevices()
     }
 
     /// Connect the playback engine and restore the persisted choice. Safe to
@@ -90,6 +111,8 @@ final class AudioOutputController: ObservableObject {
     private func refreshDevices() {
         let next = AudioOutputDevices.current()
         if next != devices { devices = next }
+        let nextDefault = AudioOutputDevices.defaultDeviceID()
+        if nextDefault != defaultDeviceID { defaultDeviceID = nextDefault }
     }
 
     /// Menu state and persistence always follow the outcome immediately; only

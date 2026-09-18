@@ -77,16 +77,48 @@ enum AudioOutputDevices {
         return ids
     }
 
-    /// Nil for input-only devices (no output channels) and for anything whose
-    /// name or UID CoreAudio will not hand over.
+    /// Nil for anything the user could not actually pick: input-only devices
+    /// (no output channels), hidden devices, devices that refuse to be a
+    /// default output (the same rule System Settings › Sound lists by), and
+    /// anything whose name or UID CoreAudio will not hand over.
     private static func describe(_ id: AudioDeviceID) -> AudioOutputDevice? {
-        guard outputChannelCount(id) > 0 else { return nil }
+        guard isOfferable(
+            outputChannels: outputChannelCount(id),
+            isHidden: uint32Property(id, kAudioDevicePropertyIsHidden).map { $0 != 0 },
+            canBeDefault: uint32Property(
+                id, kAudioDevicePropertyDeviceCanBeDefaultDevice,
+                scope: kAudioDevicePropertyScopeOutput).map { $0 != 0 })
+        else { return nil }
         guard let name = stringProperty(id, kAudioObjectPropertyName),
               let uid = stringProperty(id, kAudioDevicePropertyDeviceUID),
               !name.isEmpty, !uid.isEmpty
         else { return nil }
         return AudioOutputDevice(
-            id: id, uid: uid, name: name, transport: transportType(id))
+            id: id, uid: uid, name: name, transport: transportType(id),
+            dataSource: uint32Property(
+                id, kAudioDevicePropertyDataSource,
+                scope: kAudioDevicePropertyScopeOutput) ?? 0)
+    }
+
+    /// Whether a device belongs in the picker at all. A property CoreAudio
+    /// does not report (nil) is not held against the device — plenty of
+    /// drivers skip the optional ones.
+    static func isOfferable(outputChannels: Int, isHidden: Bool?, canBeDefault: Bool?) -> Bool {
+        outputChannels > 0 && isHidden != true && canBeDefault != false
+    }
+
+    private static func uint32Property(
+        _ id: AudioDeviceID, _ selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectHasProperty(id, &address) else { return nil }
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value) == noErr
+        else { return nil }
+        return value
     }
 
     private static func outputChannelCount(_ id: AudioDeviceID) -> Int {
@@ -155,15 +187,109 @@ enum AudioOutputDevices {
         }
     }
 
-    /// Built-in, then wired, then wireless, then AirPlay.
+    /// Built-in, then wired, then Bluetooth, then virtual, then AirPlay —
+    /// i.e. the picker's section order, with Bluetooth after wired inside
+    /// the external section.
     static func rank(_ device: AudioOutputDevice) -> Int {
-        if device.isAirPlay { return 3 }
-        switch device.transport {
-        case kAudioDeviceTransportTypeBuiltIn: return 0
-        case kAudioDeviceTransportTypeBluetooth,
-             kAudioDeviceTransportTypeBluetoothLE:
-            return 2
-        default: return 1
+        switch device.group {
+        case .thisMac: return 0
+        case .external: return device.kind == .bluetooth ? 2 : 1
+        case .virtual: return 3
+        case .airPlay: return 4
+        }
+    }
+
+    // MARK: - Picker model (pure)
+
+    /// The picker's sections, in display order. Empty sections are dropped,
+    /// except AirPlay: it is always present so the picker has somewhere to
+    /// explain why no receivers are listed (CoreAudio does no discovery).
+    static func sections(_ devices: [AudioOutputDevice]) -> [AudioOutputSection] {
+        let sorted = ordered(devices)
+        return AudioOutputGroup.allCases.compactMap { group in
+            let members = sorted.filter { $0.group == group }
+            guard !members.isEmpty || group == .airPlay else { return nil }
+            return AudioOutputSection(group: group, devices: members)
+        }
+    }
+
+    /// Where the audio is actually going: the chosen device while it is
+    /// present, otherwise whatever the system default resolves to.
+    static func activeDevice(
+        selection: AudioOutputSelection, devices: [AudioOutputDevice],
+        defaultID: AudioDeviceID?
+    ) -> AudioOutputDevice? {
+        if case .device(let uid) = selection,
+           let chosen = devices.first(where: { $0.uid == uid }) {
+            return chosen
+        }
+        guard let defaultID else { return nil }
+        return devices.first { $0.id == defaultID }
+    }
+
+    /// Name of the device "系统默认" currently resolves to, if it is one the
+    /// picker knows.
+    static func systemDefaultName(
+        defaultID: AudioDeviceID?, devices: [AudioOutputDevice]
+    ) -> String? {
+        guard let defaultID else { return nil }
+        return devices.first { $0.id == defaultID }?.name
+    }
+
+    /// Whether the route button should light up: an explicit choice away
+    /// from the default, or the audio landing on an AirPlay receiver (picked
+    /// in Control Centre, reached through the default). Bluetooth headphones
+    /// reached through the default do not count — that is the normal case.
+    static func isRoutedAway(
+        selection: AudioOutputSelection, devices: [AudioOutputDevice],
+        defaultID: AudioDeviceID?
+    ) -> Bool {
+        if case .device(let uid) = selection, devices.contains(where: { $0.uid == uid }) {
+            return true
+        }
+        return activeDevice(selection: selection, devices: devices, defaultID: defaultID)?
+            .isAirPlay == true
+    }
+}
+
+/// The picker's sections.
+enum AudioOutputGroup: Int, CaseIterable, Sendable {
+    /// Built-in speakers and the headphone jack.
+    case thisMac
+    /// Wired (USB, HDMI, DisplayPort, Thunderbolt, …) and Bluetooth.
+    case external
+    /// Virtual and aggregate devices (loopback drivers, multi-output).
+    case virtual
+    /// AirPlay receivers macOS has materialised. Last, because they come and
+    /// go and must not shove the row the user is aiming at.
+    case airPlay
+}
+
+struct AudioOutputSection: Equatable, Sendable {
+    let group: AudioOutputGroup
+    let devices: [AudioOutputDevice]
+}
+
+/// What a device is, as far as the picker's icon and secondary line care.
+enum AudioOutputKind: Equatable, Sendable {
+    case builtInSpeakers
+    case builtInHeadphones
+    case bluetooth
+    case usb
+    case hdmi
+    case displayPort
+    case thunderbolt
+    case airPlay
+    case virtual
+    case aggregate
+    case other
+
+    var group: AudioOutputGroup {
+        switch self {
+        case .builtInSpeakers, .builtInHeadphones: return .thisMac
+        case .airPlay: return .airPlay
+        case .virtual, .aggregate: return .virtual
+        case .bluetooth, .usb, .hdmi, .displayPort, .thunderbolt, .other: return .external
         }
     }
 }
@@ -177,20 +303,70 @@ struct AudioOutputDevice: Identifiable, Equatable, Sendable {
     let name: String
     /// `kAudioDevicePropertyTransportType` — 'airp' for AirPlay endpoints.
     let transport: UInt32
+    /// Output-scope `kAudioDevicePropertyDataSource`, 0 when not reported.
+    /// On Apple silicon the built-in device reports 'ispk' for the speakers
+    /// and 'hdpn' for the headphone jack ("External Headphones").
+    var dataSource: UInt32 = 0
+
+    /// `kIOAudioOutputPortSubTypeHeadphones` ('hdpn'); IOKit's constant, so
+    /// spelled out rather than importing IOKit for one four-char code.
+    static let headphonesDataSource: UInt32 = 0x6864_706E
 
     var isAirPlay: Bool { transport == kAudioDeviceTransportTypeAirPlay }
 
-    /// SF Symbol for the menu row.
-    var symbolName: String {
-        if isAirPlay { return "airplayaudio" }
+    var kind: AudioOutputKind {
         switch transport {
-        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE:
-            return "headphones"
+        case kAudioDeviceTransportTypeAirPlay: return .airPlay
         case kAudioDeviceTransportTypeBuiltIn:
+            return dataSource == Self.headphonesDataSource ? .builtInHeadphones : .builtInSpeakers
+        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE:
+            return .bluetooth
+        case kAudioDeviceTransportTypeUSB: return .usb
+        case kAudioDeviceTransportTypeHDMI: return .hdmi
+        case kAudioDeviceTransportTypeDisplayPort: return .displayPort
+        case kAudioDeviceTransportTypeThunderbolt: return .thunderbolt
+        case kAudioDeviceTransportTypeVirtual: return .virtual
+        case kAudioDeviceTransportTypeAggregate, kAudioDeviceTransportTypeAutoAggregate:
+            return .aggregate
+        default: return .other
+        }
+    }
+
+    var group: AudioOutputGroup { kind.group }
+
+    /// SF Symbol for the picker row. Transport decides the family; for the
+    /// few products whose default names are recognisable (the Mac's own
+    /// speakers, AirPods, HomePod, Apple TV) the name refines it the way
+    /// Control Centre's Sound module does. A renamed device just gets the
+    /// family glyph.
+    var symbolName: String {
+        let lower = name.lowercased()
+        switch kind {
+        case .builtInSpeakers:
+            if lower.contains("macbook") { return "laptopcomputer" }
+            if lower.contains("imac") { return "desktopcomputer" }
+            if lower.contains("mac mini") { return "macmini" }
+            if lower.contains("mac studio") { return "macstudio" }
             return "speaker.wave.2"
-        case kAudioDeviceTransportTypeHDMI, kAudioDeviceTransportTypeDisplayPort:
+        case .builtInHeadphones:
+            return "headphones"
+        case .bluetooth:
+            if lower.contains("airpods max") { return "airpodsmax" }
+            if lower.contains("airpods pro") { return "airpodspro" }
+            if lower.contains("airpods") { return "airpods" }
+            return "headphones"
+        case .airPlay:
+            if lower.contains("homepod mini") { return "homepodmini" }
+            if lower.contains("homepod") { return "homepod" }
+            if lower.contains("apple tv") { return "appletv" }
+            return "airplayaudio"
+        case .hdmi, .displayPort:
             return "display"
-        default:
+        case .virtual:
+            return "waveform"
+        case .aggregate:
+            return "square.stack.3d.up"
+        case .usb, .thunderbolt, .other:
             return "hifispeaker"
         }
     }

@@ -57,9 +57,127 @@ import Testing
 
     @Test func airPlayDevicesAreLabelledAndGetTheAirPlayGlyph() {
         #expect(airPlay.isAirPlay)
-        #expect(airPlay.symbolName == "airplayaudio")
+        #expect(airPlay.kind == .airPlay && airPlay.group == .airPlay)
+        #expect(airPlay.symbolName == "homepod")
         #expect(!builtIn.isAirPlay)
-        #expect(builtIn.symbolName == "speaker.wave.2")
+        #expect(builtIn.symbolName == "macmini")
+    }
+
+    // MARK: - Picker model
+
+    private var headphoneJack: AudioOutputDevice {
+        AudioOutputDevice(
+            id: 77, uid: "uid:jack", name: "External Headphones",
+            transport: kAudioDeviceTransportTypeBuiltIn,
+            dataSource: AudioOutputDevice.headphonesDataSource)
+    }
+
+    @Test func theHeadphoneJackIsTheBuiltInDeviceReportingTheHeadphoneDataSource() {
+        #expect(headphoneJack.kind == .builtInHeadphones)
+        #expect(headphoneJack.symbolName == "headphones")
+        #expect(headphoneJack.group == .thisMac)
+        // 'ispk', or no data source at all, is the speakers.
+        let speakers = AudioOutputDevice(
+            id: 71, uid: "s", name: "Speakers",
+            transport: kAudioDeviceTransportTypeBuiltIn, dataSource: 0x6973_706B)
+        #expect(speakers.kind == .builtInSpeakers)
+        #expect(speakers.symbolName == "speaker.wave.2")
+    }
+
+    @Test func eachTransportGetsItsOwnFamilyGlyph() {
+        let cases: [(UInt32, String, String)] = [
+            (kAudioDeviceTransportTypeBuiltIn, "MacBook Pro扬声器", "laptopcomputer"),
+            (kAudioDeviceTransportTypeBuiltIn, "iMac Speakers", "desktopcomputer"),
+            (kAudioDeviceTransportTypeBuiltIn, "Mac Studio Speakers", "macstudio"),
+            (kAudioDeviceTransportTypeBluetooth, "小明的AirPods Pro", "airpodspro"),
+            (kAudioDeviceTransportTypeBluetoothLE, "AirPods Max", "airpodsmax"),
+            (kAudioDeviceTransportTypeBluetooth, "AirPods", "airpods"),
+            (kAudioDeviceTransportTypeBluetooth, "Sony WH-1000XM5", "headphones"),
+            (kAudioDeviceTransportTypeAirPlay, "卧室 HomePod mini", "homepodmini"),
+            (kAudioDeviceTransportTypeAirPlay, "客厅 HomePod", "homepod"),
+            (kAudioDeviceTransportTypeAirPlay, "Living Room Apple TV", "appletv"),
+            (kAudioDeviceTransportTypeAirPlay, "Sonos Five", "airplayaudio"),
+            (kAudioDeviceTransportTypeHDMI, "LG TV", "display"),
+            (kAudioDeviceTransportTypeDisplayPort, "DELL U2723QE", "display"),
+            (kAudioDeviceTransportTypeUSB, "Scarlett 2i2", "hifispeaker"),
+            (kAudioDeviceTransportTypeThunderbolt, "Apollo Twin", "hifispeaker"),
+            (kAudioDeviceTransportTypeVirtual, "BlackHole 2ch", "waveform"),
+            (kAudioDeviceTransportTypeAggregate, "多输出设备", "square.stack.3d.up"),
+            (kAudioDeviceTransportTypeUnknown, "Mystery", "hifispeaker"),
+        ]
+        for (transport, name, symbol) in cases {
+            #expect(device(name, transport: transport).symbolName == symbol, "\(name)")
+        }
+    }
+
+    @Test func sectionsFollowTheSoundModuleOrderAndDropEmptyOnesExceptAirPlay() {
+        let bt = device("AirPods Pro", id: 5, transport: kAudioDeviceTransportTypeBluetooth)
+        let virtual = device("BlackHole 2ch", id: 6, transport: kAudioDeviceTransportTypeVirtual)
+        let sections = AudioOutputDevices.sections([airPlay, virtual, bt, hdmi, headphoneJack, builtIn])
+        #expect(sections.map(\.group) == [.thisMac, .external, .virtual, .airPlay])
+        #expect(sections[0].devices.map(\.name) == ["External Headphones", "Mac mini Speakers"])
+        // Wired before Bluetooth inside the external section.
+        #expect(sections[1].devices.map(\.name) == ["OF27UT Pro", "AirPods Pro"])
+        #expect(sections[3].devices == [airPlay])
+    }
+
+    @Test func theAirPlaySectionIsKeptEvenEmptySoThePickerCanExplainWhy() {
+        let sections = AudioOutputDevices.sections([builtIn, hdmi])
+        #expect(sections.map(\.group) == [.thisMac, .external, .airPlay])
+        #expect(sections.last?.devices.isEmpty == true)
+    }
+
+    @Test func virtualDevicesSortBeforeAirPlaySoReceiversStillComeLast() {
+        let virtual = device("BlackHole 2ch", id: 6, transport: kAudioDeviceTransportTypeVirtual)
+        #expect(AudioOutputDevices.ordered([airPlay, virtual, builtIn]).map(\.name)
+            == ["Mac mini Speakers", "BlackHole 2ch", "客厅 HomePod"])
+    }
+
+    @Test func onlyDevicesThatCanActuallyBeSelectedAreOffered() {
+        #expect(AudioOutputDevices.isOfferable(outputChannels: 2, isHidden: false, canBeDefault: true))
+        // Properties a driver does not report are not held against it.
+        #expect(AudioOutputDevices.isOfferable(outputChannels: 2, isHidden: nil, canBeDefault: nil))
+        #expect(!AudioOutputDevices.isOfferable(outputChannels: 0, isHidden: false, canBeDefault: true))
+        #expect(!AudioOutputDevices.isOfferable(outputChannels: 2, isHidden: true, canBeDefault: true))
+        #expect(!AudioOutputDevices.isOfferable(outputChannels: 2, isHidden: false, canBeDefault: false))
+    }
+
+    @Test func systemDefaultNamesTheDeviceItResolvesTo() {
+        let devices = [builtIn, hdmi]
+        #expect(AudioOutputDevices.systemDefaultName(defaultID: hdmi.id, devices: devices)
+            == "OF27UT Pro")
+        #expect(AudioOutputDevices.systemDefaultName(defaultID: nil, devices: devices) == nil)
+        // A default the list does not know (yet) says nothing rather than guessing.
+        #expect(AudioOutputDevices.systemDefaultName(defaultID: 999, devices: devices) == nil)
+    }
+
+    @Test func theActiveDeviceIsTheChoiceWhilePresentElseTheDefault() {
+        let devices = [builtIn, hdmi, airPlay]
+        #expect(AudioOutputDevices.activeDevice(
+            selection: .device(uid: airPlay.uid), devices: devices, defaultID: builtIn.id)
+            == airPlay)
+        #expect(AudioOutputDevices.activeDevice(
+            selection: .systemDefault, devices: devices, defaultID: hdmi.id) == hdmi)
+        #expect(AudioOutputDevices.activeDevice(
+            selection: .device(uid: "gone"), devices: devices, defaultID: builtIn.id)
+            == builtIn)
+    }
+
+    @Test func theButtonLightsForAnExplicitChoiceOrAnAirPlayDefaultOnly() {
+        let devices = [builtIn, hdmi, airPlay]
+        #expect(AudioOutputDevices.isRoutedAway(
+            selection: .device(uid: hdmi.uid), devices: devices, defaultID: builtIn.id))
+        // AirPlay picked in Control Centre reaches us through the default.
+        #expect(AudioOutputDevices.isRoutedAway(
+            selection: .systemDefault, devices: devices, defaultID: airPlay.id))
+        #expect(!AudioOutputDevices.isRoutedAway(
+            selection: .systemDefault, devices: devices, defaultID: builtIn.id))
+        let bt = device("AirPods Pro", id: 5, transport: kAudioDeviceTransportTypeBluetooth)
+        #expect(!AudioOutputDevices.isRoutedAway(
+            selection: .systemDefault, devices: devices + [bt], defaultID: bt.id))
+        // A pinned device that has gone is not a route.
+        #expect(!AudioOutputDevices.isRoutedAway(
+            selection: .device(uid: "gone"), devices: devices, defaultID: builtIn.id))
     }
 
     // MARK: - Persistence round-trip

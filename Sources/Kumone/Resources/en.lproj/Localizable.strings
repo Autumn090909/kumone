@@ -301,6 +301,18 @@
 "系统默认" = "System Default";
 "输出设备：%@" = "Output Device: %@";
 "“%@”已断开，已切换到系统默认输出" = "“%@” disconnected — switched to the system default output";
+"系统默认 · %@" = "System Default · %@";
+"输出设备" = "Output";
+"跟随系统设置" = "Follows System Settings";
+"此 Mac" = "This Mac";
+"外接设备" = "External";
+"虚拟设备" = "Virtual";
+"蓝牙" = "Bluetooth";
+"虚拟" = "Virtual";
+"聚合" = "Aggregate";
+"AirPlay 音箱需先在控制中心或“声音”设置中选择一次，才会出现在这里" = "AirPlay speakers appear here after you’ve picked them once in Control Center or Sound settings";
+"声音设置…" = "Sound Settings…";
+"打开系统设置中的“声音”" = "Opens Sound in System Settings";
 
 /* Dock menu */
 "不循环" = "Off";

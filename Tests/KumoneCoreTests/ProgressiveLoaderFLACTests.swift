@@ -84,6 +84,67 @@ struct ProgressiveLoaderFLACTests {
         return box.o
     }
 
+    // The cache mirror must be reported complete when the *transfer* ends,
+    // not when parsing catches up. The engine suspends decoding as soon as it
+    // has enough PCM queued, so on a real track the parse trails the network
+    // by minutes; tying the commit to `onCompleted` left the first track of
+    // every fresh playlist without an analysis (field: .part files never
+    // committed, `order commit … because=noOutgoingAnalysis`).
+    @Test func mirrorCompletesWhileDecodingIsSuspended() throws {
+        let caf = try Fixtures.writeSineCAF(seconds: 6, name: "flac-src-mirror")
+        let flac = try Self.flacFixture(from: caf, name: "stream-mirror")
+        let payload = try Data(contentsOf: flac)
+        let server = try TestHTTPServer(serving: payload)
+        defer { server.stop() }
+        let partURL = Fixtures.dir.appendingPathComponent("flac-mirror.part")
+        try? FileManager.default.removeItem(at: partURL)
+
+        let output = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+        let engineQueue = DispatchQueue(label: "flac-test.mirror")
+        let loader = ProgressiveLoader(remoteURL: server.url, formatHint: "flac",
+                                       partURL: partURL, output: output, queue: engineQueue)
+        final class Box: @unchecked Sendable {
+            var mirrorBytes: Int64?
+            var completedBeforeMirror = false
+            var completed = false
+        }
+        let box = Box()
+        let mirrored = DispatchSemaphore(value: 0)
+        // Backpressure from the first buffer on, exactly like a deck that has
+        // its low-water mark covered: decoding stops, the transfer does not.
+        loader.onBuffer = { [weak loader] _ in loader?.setDownloadSuspended(true) }
+        loader.onMirrorCompleted = { bytes in
+            box.mirrorBytes = bytes
+            mirrored.signal()
+        }
+        loader.onCompleted = { _ in
+            if box.mirrorBytes == nil { box.completedBeforeMirror = true }
+            box.completed = true
+        }
+        loader.start()
+        defer { loader.cancel() }
+
+        #expect(mirrored.wait(timeout: .now() + 30) == .success,
+                "the mirror should complete while decoding is suspended")
+        engineQueue.sync {}
+        #expect(!box.completedBeforeMirror)
+        #expect(!box.completed, "decoding was suspended, so the parse cannot have finished")
+        #expect(box.mirrorBytes == Int64(payload.count))
+        #expect(try Data(contentsOf: partURL) == payload,
+                "the .part must be a complete, byte-identical copy once reported")
+
+        // Releasing the backpressure still finishes the parse, reporting the
+        // mirror as committed.
+        loader.setDownloadSuspended(false)
+        let deadline = Date().addingTimeInterval(30)
+        while !box.completed, Date() < deadline {
+            loader.setDownloadSuspended(false)
+            Thread.sleep(forTimeInterval: 0.05)
+            engineQueue.sync {}
+        }
+        #expect(box.completed)
+    }
+
     // FLAC 44.1k stereo streams to completion and decodes every frame.
     // Regression coverage for the FLAC decode path (heap corruption at the
     // stream tail in the AVAudioConverter-based decoder; decodeFailed(-50)

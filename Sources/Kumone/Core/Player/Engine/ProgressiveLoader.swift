@@ -51,6 +51,18 @@ final class ProgressiveLoader: NSObject, @unchecked Sendable {
     /// Network stream ended cleanly and the tail was flushed. `cacheCommitted`
     /// is false when a seek abandoned the contiguous `.part` write.
     var onCompleted: ((_ cacheCommitted: Bool) -> Void)?
+    /// The network transfer finished and the `.part` mirror is a complete,
+    /// contiguous copy of the file, closed and safe to commit — reported the
+    /// moment the last byte lands, **not** when parsing catches up.
+    ///
+    /// The two are minutes apart on a normal track: the engine's backpressure
+    /// suspends *decoding* once enough PCM is queued, so a fast transfer sits
+    /// in `backlog` and is parsed at playback speed. Tying the cache commit to
+    /// `onCompleted` made the whole file unusable — no analysis, no AutoMix
+    /// pick, no candidate downloads — until the song was nearly over, which is
+    /// why the first track of every freshly started playlist never got an
+    /// analysis. Fires at most once, never after a seek abandoned the mirror.
+    var onMirrorCompleted: ((_ bytes: Int64) -> Void)?
     var onError: ((Error) -> Void)?
 
     enum LoaderError: LocalizedError {
@@ -104,6 +116,9 @@ final class ProgressiveLoader: NSObject, @unchecked Sendable {
     private let feed = ConverterFeed()
 
     private var fileHandle: FileHandle?
+    /// Set when the mirror was closed at the end of the transfer; the parse
+    /// finishing later then reports it as committed without touching the file.
+    private var mirrorCommitted = false
     private var cacheAbandoned = false
     private var cancelled = false
     private var failed = false
@@ -669,6 +684,14 @@ extension ProgressiveLoader: URLSessionDataDelegate {
         }
         guard !failed else { return }
         networkDone = true
+        // Every byte is on disk now, whatever the parser has got to.
+        if !cacheAbandoned, let fileHandle {
+            let bytes = (try? fileHandle.offset()).map(Int64.init) ?? 0
+            try? fileHandle.close()
+            self.fileHandle = nil
+            mirrorCommitted = true
+            notify { self.onMirrorCompleted?(bytes) }
+        }
         if suspended || !backlog.isEmpty {
             // Completion surfaces after the backlog drains (drainStep calls
             // finishOnQueue); while suspended, the engine's low-water resume
@@ -720,7 +743,7 @@ extension ProgressiveLoader: URLSessionDataDelegate {
         statLock.lock()
         completed = true
         statLock.unlock()
-        var committed = false
+        var committed = mirrorCommitted
         if !cacheAbandoned, let fileHandle {
             try? fileHandle.close()
             self.fileHandle = nil

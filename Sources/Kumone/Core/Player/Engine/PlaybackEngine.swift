@@ -777,14 +777,26 @@ final class PlaybackEngine: @unchecked Sendable {
                 guard let self, let loader else { return }
                 self.scheduleStreamBufferLocked(deck: deck, loader: loader, buffer: buffer)
             }
-            loader.onCompleted = { [weak self, weak loader] cacheCommitted in
+            loader.onMirrorCompleted = { [weak self, weak loader] bytes in
+                guard let self, let loader,
+                      let state = self.deckStates[deck],
+                      case .stream(let current) = state.source, current === loader else { return }
+                // The file is complete on disk while the deck is still playing
+                // it from the stream: the cache commit, the analysis and the
+                // AutoMix pick can all start now, not when the parse catches up
+                // near the end of the song.
+                PlaybackJournal.note(String(
+                    format: "stream mirror complete deck=%@ bytes=%lld",
+                    self.journalDeckName(state), bytes))
+                self.eventContinuation.yield(.streamDownloadCompleted(deck))
+            }
+            loader.onCompleted = { [weak self, weak loader] _ in
                 guard let self, let loader,
                       let state = self.deckStates[deck],
                       case .stream(let current) = state.source, current === loader else { return }
                 state.streamEnded = true
-                if cacheCommitted {
-                    self.eventContinuation.yield(.streamDownloadCompleted(deck))
-                }
+                // The cache half of "completed" was already reported by
+                // `onMirrorCompleted`, when the last byte arrived.
                 // The stream may already be drained (stalled at the tail).
                 if state.pendingStreamBuffers <= 0, state.isPlaying {
                     state.streamStalled = false

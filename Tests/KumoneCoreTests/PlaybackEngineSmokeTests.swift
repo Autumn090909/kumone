@@ -415,6 +415,9 @@ private let audioOutputAvailable: Bool = {
     Thread.sleep(forTimeInterval: 1)
     guard let end = renderedSampleTime() else { return false }
     let advanced = Double(end.sampleTime - start.sampleTime) / start.sampleRate
+    // CI runners' virtual outputs can run well under real time; say so, since
+    // it is the first thing to check when a real-time assertion flakes there.
+    print("PlaybackEngineSmoke: output clock ran \(advanced)s in 1s of wall time")
     guard advanced >= 0.5 else {
         print("PlaybackEngineSmoke: output clock advanced \(advanced)s in 1s; playback tests will be skipped")
         return false
@@ -443,7 +446,7 @@ struct PlaybackEngineSmokeTests {
     // (a) Local file deck: position advances, deckFinished on natural end.
     @Test func filePlaybackAdvancesAndFinishes() throws {
         guard audioOutputAvailable else { return } // skipped: no audio device
-        let result = withWatchdog("filePlayback", timeout: 25) { () -> (TimeInterval, Bool) in
+        let result = withWatchdog("filePlayback", timeout: 35) { () -> (TimeInterval, Bool) in
             let engine = PlaybackEngine()
             let log = EventLog(engine)
             defer { engine.stopAll() }
@@ -455,7 +458,9 @@ struct PlaybackEngineSmokeTests {
             engine.outputVolume = 0
             engine.play(deck: .a, from: 0)
             let pos = pollPosition(engine, deck: .a, past: 1.0, timeout: 3)
-            let finished = log.wait(timeout: 10) {
+            // 6 s of audio; the budget allows for an output clock running at
+            // ~half speed (see `audioOutputAvailable`).
+            let finished = log.wait(timeout: 20) {
                 if case .deckFinished(.a) = $0 { return true }
                 return false
             }

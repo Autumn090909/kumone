@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // Pure decision function: two analyses in, one TransitionPlan out (spec §5).
@@ -2946,3 +2947,4 @@ enum TransitionPlanner {
         return (.crossfade(duration: fade, outPoint: outPoint, inPoint: inPoint), nil)
     }
 }
+#endif

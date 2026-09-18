@@ -1,3 +1,4 @@
+#if os(macOS)
 import Accelerate
 import Foundation
 
@@ -322,3 +323,4 @@ enum LoudnessMeter {
         return Array(output[2...])
     }
 }
+#endif

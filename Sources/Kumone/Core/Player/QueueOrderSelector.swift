@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // The stateful half of the AutoMix queue-reorder mode
@@ -650,3 +651,4 @@ extension Duration {
         return Double(parts.seconds) * 1000 + Double(parts.attoseconds) / 1e15
     }
 }
+#endif

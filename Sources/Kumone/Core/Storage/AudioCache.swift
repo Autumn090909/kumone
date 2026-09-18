@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// Disk cache for full song audio, with LRU eviction by file mtime and
@@ -208,3 +209,4 @@ actor AudioCache {
         }
     }
 }
+#endif

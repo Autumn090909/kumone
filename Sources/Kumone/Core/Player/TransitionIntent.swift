@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // 意图层 — the P3 layer of docs/automix-score-predev.md (§2.4).
@@ -567,3 +568,4 @@ extension TransitionIntent {
         return flatness >= config.intentWallFlatness && occupancy >= config.intentWallOccupancy
     }
 }
+#endif

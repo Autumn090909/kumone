@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // The listening-feedback corpus: one JSON object per line in
@@ -178,3 +179,4 @@ enum AutoMixFeedbackLog {
         return String(format: "%08x", UInt32(truncatingIfNeeded: hash))
     }
 }
+#endif

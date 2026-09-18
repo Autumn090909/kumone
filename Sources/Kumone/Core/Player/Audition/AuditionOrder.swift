@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // The offline face of the queue-reorder mode (docs/automix-queue-predev.md
@@ -613,3 +614,4 @@ extension Audition {
         url.deletingPathExtension().lastPathComponent
     }
 }
+#endif

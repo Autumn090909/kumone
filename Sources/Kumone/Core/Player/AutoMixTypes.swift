@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // Shared contracts between the playback engine, the analyzer, and the
@@ -815,3 +816,4 @@ extension TransitionPlan {
         }
     }
 }
+#endif

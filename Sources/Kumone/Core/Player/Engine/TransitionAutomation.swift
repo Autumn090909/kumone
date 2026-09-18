@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// The transition's parameter curves, as a pure function of time.
@@ -895,3 +896,4 @@ enum TransitionAutomation {
         return s
     }
 }
+#endif

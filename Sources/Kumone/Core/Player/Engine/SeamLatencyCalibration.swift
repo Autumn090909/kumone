@@ -1,3 +1,4 @@
+#if os(macOS)
 import AVFoundation
 import Foundation
 
@@ -243,3 +244,4 @@ enum SeamRelease {
         return max(0, rawLead / rate + compensation)
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// Persists Netease's timed lyrics as a plain `.lrc` next to the cached audio.
@@ -72,3 +73,4 @@ enum LyricsSidecar {
         write(response.lrc?.lyric, for: audio)
     }
 }
+#endif

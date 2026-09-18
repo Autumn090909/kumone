@@ -104,13 +104,13 @@ final class SettingsManager: ObservableObject {
         static let unblock = "settings.enableUnblock"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
+        #if os(macOS)
         static let automix = "settings.automixEnabled"
         static let automixTransitions = "settings.automixTransitions"
         static let automixOrder = "settings.automixOrder"
         static let automixStems = "settings.automixStems"
         static let loudnessCompensation = "settings.loudnessCompensation"
         static let audioCacheLimit = "settings.audioCacheLimit"
-        #if os(macOS)
         static let outputDevice = "settings.outputDeviceUID"
         #endif
         static let desktopLyricsCentered = "settings.desktopLyricsCentered"
@@ -166,6 +166,7 @@ final class SettingsManager: ObservableObject {
     @Published var showDesktopLyrics: Bool {
         didSet { UserDefaults.standard.set(showDesktopLyrics, forKey: Keys.desktopLyrics) }
     }
+    #if os(macOS)
 
     /// The AutoMix master switch. Off means no per-track analysis at all, and
     /// every sub-setting below is inert. Opt-in: AutoMix costs CPU (analysis),
@@ -219,7 +220,6 @@ final class SettingsManager: ObservableObject {
         }
     }
 
-    #if os(macOS)
     /// CoreAudio UID of the chosen output device; "" follows the system
     /// default. UID rather than the numeric AudioDeviceID, which is not
     /// stable across launches. Written by `AudioOutputController`.
@@ -268,6 +268,7 @@ final class SettingsManager: ObservableObject {
         enableUnblock = defaults.object(forKey: Keys.unblock) as? Bool ?? true
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
+        #if os(macOS)
         automixEnabled = defaults.object(forKey: Keys.automix) as? Bool ?? false
         automixTransitionsEnabled =
             defaults.object(forKey: Keys.automixTransitions) as? Bool ?? true
@@ -276,7 +277,6 @@ final class SettingsManager: ObservableObject {
         loudnessCompensationEnabled =
             defaults.object(forKey: Keys.loudnessCompensation) as? Bool ?? true
         audioCacheLimit = (defaults.object(forKey: Keys.audioCacheLimit) as? Int64) ?? 2_147_483_648
-        #if os(macOS)
         outputDeviceUID = defaults.string(forKey: Keys.outputDevice) ?? ""
         #endif
         desktopLyricsCentered = defaults.object(forKey: Keys.desktopLyricsCentered) as? Bool ?? false

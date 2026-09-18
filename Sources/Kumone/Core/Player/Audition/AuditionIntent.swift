@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // `audition intent <dir>` — the P3 acceptance gate, run **before** anybody
@@ -339,3 +340,4 @@ extension Audition {
                           anchorFlankTolerance: ScoreCompiler.anchorFlankTolerance)
     }
 }
+#endif

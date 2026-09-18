@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import CryptoKit
 
@@ -413,3 +414,4 @@ enum StemModelFetcher {
         }
     }
 }
+#endif

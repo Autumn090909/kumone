@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// Persistent, quality-independent home for `TrackAnalysis` (spec §3).
@@ -215,3 +216,4 @@ actor AnalysisStore {
         try? Data().write(to: directory.appendingPathComponent(Self.migrationMarker))
     }
 }
+#endif

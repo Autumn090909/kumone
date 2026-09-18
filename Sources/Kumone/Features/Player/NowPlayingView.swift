@@ -787,10 +787,11 @@ struct NowPlayingView: View {
                 }
                 .frame(maxWidth: .infinity)
             } else {
+                #if os(macOS)
                 // All three queue orders on the one button; the cycle skips
-                // AutoMix wherever it could do nothing (iOS, AutoMix off,
-                // order off), so this row keeps its present width and its
-                // two-state behaviour there.
+                // AutoMix wherever it could do nothing (AutoMix off, order
+                // off), so this row keeps its present width and its two-state
+                // behaviour there.
                 circleButton(
                     icon: player.queueOrder.symbolName, size: 14,
                     tint: player.queueOrder != .listed ? Theme.accent : nil
@@ -798,6 +799,15 @@ struct NowPlayingView: View {
                     player.cycleQueueOrder()
                 }
                 .frame(maxWidth: .infinity)
+                #else
+                circleButton(
+                    icon: "shuffle", size: 14,
+                    tint: player.shuffleEnabled ? Theme.accent : nil
+                ) {
+                    player.toggleShuffle()
+                }
+                .frame(maxWidth: .infinity)
+                #endif
                 circleButton(icon: "backward.fill", size: 16) {
                     player.previous()
                 }

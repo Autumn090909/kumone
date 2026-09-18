@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// Offline validation surface for the vocal-activity detector (S0.5).
@@ -70,3 +71,4 @@ public enum VocalActivityEval {
         return out
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Accelerate
 import AVFoundation
 import Foundation
@@ -1418,3 +1419,4 @@ enum TrackAnalyzer {
         return out
     }
 }
+#endif

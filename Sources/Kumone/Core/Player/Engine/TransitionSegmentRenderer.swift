@@ -1,3 +1,4 @@
+#if os(macOS)
 import AVFoundation
 import Foundation
 
@@ -269,3 +270,4 @@ enum TransitionSegmentRenderer {
         return buffer
     }
 }
+#endif

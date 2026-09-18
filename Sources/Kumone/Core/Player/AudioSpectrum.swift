@@ -1,9 +1,13 @@
 import Accelerate
 import AVFoundation
 import Foundation
+#if os(iOS)
+import MediaToolbox
+#endif
 
 /// Real-time band levels pulled out of the playing audio.
 ///
+#if os(macOS)
 /// `PlaybackEngine` hands us every buffer of its final mixed output (see
 /// `setOutputSampleSink`) and we run a small FFT over it. That callback is a
 /// real-time audio thread: everything it touches below is preallocated,
@@ -13,6 +17,17 @@ import Foundation
 /// pre-rendered segment during a hand-over — so there is nothing to re-wire per
 /// track. See `tapState`, which callers use to decide between real levels,
 /// holding still, and the decorative fallback.
+#else
+/// `AVPlayer` exposes no metering, so we splice an `MTAudioProcessingTap` into
+/// the player item's audio mix and run a small FFT on the PCM it hands us. The
+/// tap runs on a real-time audio thread: everything it touches below is
+/// preallocated, lock-free and allocation-free.
+///
+/// Not every track can be tapped — an audio mix needs a resolved `AVAssetTrack`,
+/// and a source server that refuses byte-range requests never produces one. See
+/// `tapState`, which callers use to decide between real levels, holding still,
+/// and the decorative fallback.
+#endif
 @MainActor
 final class AudioSpectrum {
     static let shared = AudioSpectrum()
@@ -21,6 +36,7 @@ final class AudioSpectrum {
     /// too, so it stays outside the actor's isolation.
     nonisolated static let bandCount = 4
 
+    #if os(macOS)
     /// One store for the life of the process: the engine's tap is installed
     /// once on a mixer that never goes away, so — unlike a per-item player tap —
     /// there is no outgoing analyzer to leave writing over the new track. It is
@@ -29,6 +45,17 @@ final class AudioSpectrum {
     /// `nonisolated` because the audio thread writes into it directly; every
     /// field it exposes is a plain slot, so a torn read costs one stale bar.
     private nonisolated let store = SpectrumStore()
+    #else
+    /// Replaced for each new item rather than cleared.
+    ///
+    /// The outgoing track's tap keeps running until its player item is actually
+    /// swapped out, so clearing the store in place doesn't work: the old tap
+    /// simply writes the old track's levels straight back, and the bars show the
+    /// previous song for a moment as the new one starts. Handing the new item a
+    /// fresh store leaves the old tap writing to one nobody reads, which it
+    /// keeps alive on its own until it is finalized.
+    private var store = SpectrumStore()
+    #endif
     private init() {}
 
     /// True while the tap is actually delivering samples for the current track.
@@ -61,6 +88,7 @@ final class AudioSpectrum {
     }
 
 
+    #if os(macOS)
     /// One buffer of the engine's final output. Called on a real-time audio
     /// thread — allocates nothing, locks nothing, hops no actor.
     nonisolated func ingest(_ buffer: AVAudioPCMBuffer) {
@@ -72,12 +100,31 @@ final class AudioSpectrum {
     func markTapped() {
         tapState = .tapped
     }
+    #else
+    /// Builds the audio mix that feeds this analyzer.
+    ///
+    /// - Returns: `nil` when the track can't be tapped, in which case the caller
+    ///   should play the item as-is and let the UI fall back.
+    func makeAudioMix(for track: AVAssetTrack) -> AVAudioMix? {
+        guard let tap = store.makeTap() else { return nil }
+        let params = AVMutableAudioMixInputParameters(track: track)
+        params.audioTapProcessor = tap
+        let mix = AVMutableAudioMix()
+        mix.inputParameters = [params]
+        tapState = .tapped
+        return mix
+    }
+    #endif
 
     /// Call as soon as a track is chosen — before its URL is resolved — so the
     /// bars hold still instead of falling back while the answer is unknown.
     func beginPreparing() {
         tapState = .preparing
+        #if os(macOS)
         store.reset()
+        #else
+        store = SpectrumStore()
+        #endif
     }
 
     /// Call once it's settled that this source can't be tapped.
@@ -101,9 +148,15 @@ final class AudioSpectrum {
 
 // MARK: - Lock-free store shared with the audio thread
 
+#if os(macOS)
 /// Backing storage for the tap. Read by `AudioSpectrum` on the main actor and
 /// written from the engine's audio thread; every field it exposes is a plain
 /// `Float` slot, so a torn read costs at most one slightly stale bar.
+#else
+/// Backing storage for the tap. Held by `AudioSpectrum` on the main actor and by
+/// the tap's `clientInfo` on the audio thread; every field it exposes is a plain
+/// `Float` slot, so a torn read costs at most one slightly stale bar.
+#endif
 private final class SpectrumStore: @unchecked Sendable {
     /// FFT window. 512 samples ≈ 12ms at 44.1kHz — fast enough to feel reactive,
     /// long enough to resolve bass.
@@ -126,7 +179,11 @@ private final class SpectrumStore: @unchecked Sendable {
     private let magnitudes: UnsafeMutablePointer<Float>
     private let fftSetup: FFTSetup?
 
+    #if os(macOS)
     /// Source format, learned from the buffers themselves.
+    #else
+    /// Source format, learned in the tap's prepare callback.
+    #endif
     private var sampleRate: Double = 44_100
     private var channelCount = 2
     private var isInterleaved = true
@@ -207,6 +264,7 @@ private final class SpectrumStore: @unchecked Sendable {
 
     // MARK: Tap plumbing
 
+    #if os(macOS)
     /// Analyze one buffer from the engine's mixer tap.
     ///
     /// The mixer hands us non-interleaved float in practice; `process` reads the
@@ -228,6 +286,50 @@ private final class SpectrumStore: @unchecked Sendable {
             || interleaved != isInterleaved else { return }
         adopt(format: format)
     }
+    #else
+    func makeTap() -> MTAudioProcessingTap? {
+        // The tap holds an unmanaged +1 reference; `finalize` gives it back.
+        let retained = Unmanaged.passRetained(self)
+        var callbacks = MTAudioProcessingTapCallbacks(
+            version: kMTAudioProcessingTapCallbacksVersion_0,
+            clientInfo: UnsafeMutableRawPointer(retained.toOpaque()),
+            init: { _, clientInfo, storageOut in storageOut.pointee = clientInfo },
+            finalize: { tap in
+                Unmanaged<SpectrumStore>
+                    .fromOpaque(MTAudioProcessingTapGetStorage(tap)).release()
+            },
+            prepare: { tap, _, format in
+                let store = Unmanaged<SpectrumStore>
+                    .fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
+                store.adopt(format: format.pointee)
+            },
+            // Deliberately no unprepare: on a track change the outgoing tap tears
+            // down after the incoming one is already feeding us, so clearing here
+            // would blank the new track's first frames. `PlayerService` resets
+            // explicitly at the points where silence is actually correct.
+            unprepare: nil,
+            process: { tap, numberFrames, _, bufferListInOut, numberFramesOut, flagsOut in
+                let status = MTAudioProcessingTapGetSourceAudio(
+                    tap, numberFrames, bufferListInOut, flagsOut, nil, numberFramesOut)
+                guard status == noErr else { return }
+                let store = Unmanaged<SpectrumStore>
+                    .fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
+                store.process(bufferListInOut, frames: Int(numberFramesOut.pointee))
+            }
+        )
+
+        var tap: MTAudioProcessingTap?
+        let err = MTAudioProcessingTapCreate(
+            kCFAllocatorDefault, &callbacks,
+            kMTAudioProcessingTapCreationFlag_PostEffects, &tap)
+        guard err == noErr, let tap else {
+            // `finalize:` will never run, so hand the retain back by hand.
+            retained.release()
+            return nil
+        }
+        return tap
+    }
+    #endif
 
     private func adopt(format: AudioStreamBasicDescription) {
         sampleRate = format.mSampleRate > 0 ? format.mSampleRate : 44_100

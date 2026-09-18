@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // The JSON the tuning console draws from: everything the decision turned on,
@@ -1173,3 +1174,4 @@ extension Audition {
                            reason: reason)
     }
 }
+#endif

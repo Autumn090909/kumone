@@ -1,3 +1,4 @@
+#if os(macOS)
 import Accelerate
 import Foundation
 
@@ -519,3 +520,4 @@ enum StructureSegmenter {
 
     private static func clamp01(_ v: Double) -> Double { min(1, max(0, v)) }
 }
+#endif

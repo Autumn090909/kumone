@@ -1,3 +1,4 @@
+#if os(macOS)
 import AVFoundation
 import Foundation
 
@@ -253,3 +254,4 @@ enum WholeMixLaneLayer {
         return out
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import AVFoundation
 import AudioToolbox
 
@@ -356,3 +357,4 @@ enum DeckChain {
                 read(kLimiterParam_PreGain))
     }
 }
+#endif

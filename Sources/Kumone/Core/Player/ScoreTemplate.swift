@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // 乐谱模板 — the P4 layer of docs/automix-score-predev.md (§2.5).
@@ -306,3 +307,4 @@ enum ScoreTemplate: Equatable, Sendable {
         }
     }
 }
+#endif

@@ -3,11 +3,11 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsManager
     @EnvironmentObject private var account: AccountStore
+    @State private var cacheSize: String = String(localized: "计算中…")
     #if os(macOS)
     @ObservedObject private var downloader = StemModelDownloader.shared
-    #endif
-    @State private var cacheSize: String = String(localized: "计算中…")
     @State private var audioCacheSize: String = String(localized: "计算中…")
+    #endif
 
     var body: some View {
         Form {
@@ -25,8 +25,8 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-
             #if os(macOS)
+
             // AutoMix is a group of its own because it is a group of costs:
             // the master switch buys analysis, and each sub-switch below adds
             // one specific bill (a seam, extra downloads, the GPU) on top.
@@ -139,6 +139,7 @@ struct SettingsView: View {
                 Button("清除缓存") {
                     clearCache()
                 }
+                #if os(macOS)
                 LabeledContent("歌曲缓存", value: audioCacheSize)
                 Picker("歌曲缓存上限", selection: $settings.audioCacheLimit) {
                     Text("512 MB").tag(Int64(512) << 20)
@@ -156,6 +157,7 @@ struct SettingsView: View {
                         ToastCenter.shared.show(String(localized: "歌曲缓存已清除"))
                     }
                 }
+                #endif
             }
 
             Section("账号") {
@@ -197,14 +199,16 @@ struct SettingsView: View {
         .formStyle(.grouped)
         #if os(macOS)
         .frame(width: 440, height: 480)
-        #endif
         .task {
             updateCacheSize()
             updateAudioCacheSize()
         }
+        #else
+        .task { updateCacheSize() }
+        #endif
     }
-
     #if os(macOS)
+
     /// Whether the two-stem model is on disk, read from the downloader so the
     /// toggle flips the moment a download lands (the launcher wires the
     /// separator in via `onInstalled`; `StemSeparation.isAvailable` is not
@@ -219,7 +223,6 @@ struct SettingsView: View {
         Binding(get: { settings.automixStemsEnabled && stemModelsInstalled },
                 set: { settings.automixStemsEnabled = $0 })
     }
-    #endif
 
     private func updateAudioCacheSize() {
         Task {
@@ -227,6 +230,7 @@ struct SettingsView: View {
             audioCacheSize = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         }
     }
+    #endif
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"

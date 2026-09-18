@@ -84,10 +84,11 @@ struct PlayerBar: View {
                     }
                     .help("不喜欢，换一首")
                 } else {
+                    #if os(macOS)
                     // One control for all three queue orders: the third state
                     // is a *kind* of shuffle, so it lives inside the shuffle
                     // button rather than beside it. The cycle skips it wherever
-                    // it could do nothing (iOS, AutoMix off, order off), which
+                    // it could do nothing (AutoMix off, order off), which
                     // leaves the familiar two-state button untouched there.
                     PlayerIconButton(
                         icon: player.queueOrder.symbolName, size: 12,
@@ -96,6 +97,15 @@ struct PlayerBar: View {
                         player.cycleQueueOrder()
                     }
                     .help(player.queueOrder.controlHelp)
+                    #else
+                    PlayerIconButton(
+                        icon: "shuffle", size: 12,
+                        isActive: player.shuffleEnabled
+                    ) {
+                        player.toggleShuffle()
+                    }
+                    .help("随机播放")
+                    #endif
                 }
 
                 PlayerIconButton(icon: "backward.fill", size: 14, disabled: player.isFMMode) {
@@ -213,6 +223,7 @@ struct PlayerBar: View {
 }
 
 // MARK: - Icon button
+#if os(macOS)
 
 /// How the one queue-order control presents each state. Here rather than on
 /// the enum itself so `QueueOrder` stays a pure Core type: three transports
@@ -236,6 +247,7 @@ extension QueueOrder {
         }
     }
 }
+#endif
 
 struct PlayerIconButton: View {
     let icon: String

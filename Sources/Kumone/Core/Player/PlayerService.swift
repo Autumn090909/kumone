@@ -1,3 +1,10 @@
+// macOS player: the dual-deck `PlaybackEngine` with AutoMix, stems and the
+// output-device picker. iOS never gets AutoMix and keeps the original
+// AVPlayer-based `PlayerService` in PlayerServiceIOS.swift (kept identical to
+// the pre-AutoMix file). Exactly one of the two compiles per platform, so
+// every call site sees a single `PlayerService`; anything shared UI calls on
+// it must exist in both, or be guarded with `#if os(macOS)` at the call site.
+#if os(macOS)
 import AVFoundation
 import Foundation
 
@@ -3477,3 +3484,4 @@ final class PlayerService: ObservableObject {
         return support.appendingPathComponent("player-state.json")
     }
 }
+#endif

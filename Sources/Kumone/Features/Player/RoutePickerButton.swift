@@ -1,26 +1,13 @@
 import AVKit
 import SwiftUI
 
-/// The output-route control in the transport row.
-///
-/// Two different things behind one name, because the two platforms route
-/// audio in genuinely different ways:
-///
-/// - **iOS** keeps the system picker (`AVRoutePickerView`). Routing there is
-///   an `AVAudioSession` matter, and the session is what an `AVAudioEngine`
-///   renders through — so picking an AirPlay route in the system sheet moves
-///   this app's audio, and the picker is the right (and only sanctioned) UI.
-/// - **macOS** shows an in-app output-device picker (`OutputDevicePicker`).
-///   `AVRoutePickerView` on the Mac routes an `AVPlayer` /
-///   `AVSampleBufferAudioRenderer`; Kumone's playback is an AVAudioEngine
-///   graph and has had no AVPlayer since the dual-deck engine landed, so the
-///   button here was inert — selecting an AirPlay speaker did nothing at all.
-///   The Mac equivalent is choosing the CoreAudio output device the engine
-///   renders to; see `AudioOutputDevices`.
+/// System AirPlay / output-route picker (`AVRoutePickerView`), styled to sit
+/// among the transport controls. Because playback is audio-only (AVPlayer with
+/// no video track), selecting a route sends audio to the device — it does not
+/// mirror the screen.
 struct RoutePickerButton: View {
     var diameter: CGFloat = 40
     var glyphSize: CGFloat = 15
-    /// iOS only: bumping this opens the system route sheet programmatically.
     var request = 0
     /// White-on-glass (now-playing) vs. accent-aware (player bar).
     var tint: Color = .white.opacity(0.8)
@@ -28,6 +15,14 @@ struct RoutePickerButton: View {
 
     var body: some View {
         #if os(macOS)
+        // macOS shows an in-app output-device picker instead of the system
+        // one: `AVRoutePickerView` on the Mac routes an `AVPlayer` /
+        // `AVSampleBufferAudioRenderer`, and macOS playback is an
+        // AVAudioEngine graph with no AVPlayer since the dual-deck engine
+        // landed, so that button was inert — selecting an AirPlay speaker did
+        // nothing at all. The Mac equivalent is choosing the CoreAudio output
+        // device the engine renders to; see `AudioOutputDevices`. `request`
+        // is iOS-only (it opens the system route sheet programmatically).
         OutputDevicePicker(
             diameter: diameter, glyphSize: glyphSize, tint: tint, background: background)
         #else
@@ -73,9 +68,7 @@ private struct RoutePickerRepresentable: UIViewRepresentable {
         }
     }
 }
-#endif
-
-#if os(macOS)
+#elseif os(macOS)
 import AppKit
 
 /// macOS output picker: a popover modelled on Control Centre's Sound module.

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Accelerate
 import AudioToolbox
 import AVFoundation
@@ -5488,3 +5489,4 @@ final class PlaybackEngine: @unchecked Sendable {
         }
     }
 }
+#endif

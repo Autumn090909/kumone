@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// Cross-track loudness compensation: one constant playback gain per song, so
@@ -200,3 +201,4 @@ enum LoudnessCompensation {
     /// dB → linear gain, the multiplier a fader is scaled by.
     static func gain(fromDB db: Double) -> Float { Float(pow(10.0, db / 20.0)) }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 // Live read-out of the AutoMix pipeline, for the person running listening
@@ -1036,3 +1037,4 @@ extension AutoMixDebugPlan {
         }
     }
 }
+#endif

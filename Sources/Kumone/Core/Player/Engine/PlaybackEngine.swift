@@ -1924,14 +1924,31 @@ final class PlaybackEngine: @unchecked Sendable {
             : -AVAudioTime.seconds(forHostTime: now &- host)
     }
 
-    private func startNodeIfNeededLocked(_ state: DeckState) {
+    private func startNodeIfNeededLocked(_ state: DeckState, attempt: Int = 0) {
         guard !state.hostScheduledStart else { return }
         guard state.isPlaying, !isPaused, state.isConnected, engine.isRunning else { return }
-        if !state.player.isPlaying {
-            trace.record(.play, state.traceDeck, .play, state.lastKnownPosition)
-            state.player.play()
+        guard !state.player.isPlaying else { return }
+        // `isRunning` turns true before the output has rendered, and `play()`
+        // in that window raises "player did not see an IO cycle" — an
+        // NSException, so a crash (seen on CI with two engines starting at
+        // once; the same window follows every restart after a device switch).
+        // Wait for the first cycle; every guard above is re-checked on retry.
+        guard engine.outputNode.lastRenderTime?.isSampleTimeValid == true else {
+            if attempt < Self.firstIOCycleRetries {
+                queue.asyncAfter(deadline: .now() + Self.firstIOCycleRetryInterval) { [weak self] in
+                    self?.startNodeIfNeededLocked(state, attempt: attempt + 1)
+                }
+            } else {
+                PlaybackJournal.note("deck start withheld deck=\(journalDeckName(state)) "
+                    + "(output never completed an IO cycle)")
+            }
+            return
         }
+        trace.record(.play, state.traceDeck, .play, state.lastKnownPosition)
+        state.player.play()
     }
+    private static let firstIOCycleRetries = 40
+    private static let firstIOCycleRetryInterval: TimeInterval = 0.025
 
     /// Every effect parameter back to transparent. The single place that
     /// knows the neutral pose of a deck's chain — every transition exit path

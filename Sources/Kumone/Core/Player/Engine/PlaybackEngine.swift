@@ -462,6 +462,11 @@ final class PlaybackEngine: @unchecked Sendable {
         /// paused, so a pause mid-transition does not fast-forward the ramps.
         var elapsed: TimeInterval = 0
         var restoreElapsed: TimeInterval = 0
+        /// When the transition timer last fired. The overlap and the settle
+        /// advance by the time that actually passed rather than by the nominal
+        /// interval: a busy machine delays and coalesces timer fires, and
+        /// counted in ticks the automation fell behind the audio it shapes.
+        var lastTickUptime: TimeInterval?
         var midpointSent = false
         /// A pre-rendered stem hand-over for exactly this plan, if one was
         /// finished in time. Nil is the ordinary case and means the live
@@ -3401,6 +3406,9 @@ final class PlaybackEngine: @unchecked Sendable {
     private static let rideTick: TimeInterval = 0.05
     /// The most one glide step may cover; see `lastRideTickUptime`.
     private static let rideTickMaxStep: TimeInterval = 0.25
+    /// The most one overlap / settle step may cover; see
+    /// `TransitionState.lastTickUptime`.
+    private static let transitionTickMaxStep: TimeInterval = 0.25
 
     /// Put the deck's ride at `db` **now**, with no glide, and re-write the
     /// fader through it.
@@ -4153,6 +4161,12 @@ final class PlaybackEngine: @unchecked Sendable {
             stopTransitionTimerLocked()
             return
         }
+        // Stamped before the pause guard so paused time is never counted, and
+        // capped so a stalled queue resumes the curve rather than jumps it.
+        let now = ProcessInfo.processInfo.systemUptime
+        let dt = Swift.min(now - (tr.lastTickUptime ?? now - transitionTimerInterval),
+                           Self.transitionTickMaxStep)
+        tr.lastTickUptime = now
         guard !isPaused else { return }
         switch tr.phase {
         case .waiting:
@@ -4164,10 +4178,10 @@ final class PlaybackEngine: @unchecked Sendable {
         case .segmentPlaying:
             updateSegmentLocked(tr)
         case .overlapping:
-            tr.elapsed += transitionTimerInterval
+            tr.elapsed += dt
             updateOverlapLocked(tr)
         case .settling:
-            tr.restoreElapsed += transitionTimerInterval
+            tr.restoreElapsed += dt
             settleTickLocked(tr)
         }
     }
@@ -4455,6 +4469,7 @@ final class PlaybackEngine: @unchecked Sendable {
         captureOutputTapLocked(seconds: 8, label: "overlap")
         tr.phase = .overlapping
         tr.elapsed = 0
+        tr.lastTickUptime = ProcessInfo.processInfo.systemUptime
         // The overlap automation writes the outgoing rate from here on (flat at
         // `outgoingRate` for a ramped plan, since the glide has already landed
         // it there), so the ramp has nothing left to hand back.
@@ -5157,6 +5172,7 @@ final class PlaybackEngine: @unchecked Sendable {
         if tr.restoringRate || tailRinging {
             tr.phase = .settling
             tr.restoreElapsed = 0
+            tr.lastTickUptime = ProcessInfo.processInfo.systemUptime
             startTransitionTimerLocked(interval: tickInterval)
         } else {
             transition = nil

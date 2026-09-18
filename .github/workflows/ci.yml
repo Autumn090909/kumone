@@ -18,11 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Xcode 26+ ships without the Metal compiler; mlx-swift's .metal sources
-      # (StemKit) need it.
-      - name: Install Metal Toolchain
-        run: xcodebuild -downloadComponent MetalToolchain
-
       - name: Build
         run: swift build
 
@@ -33,5 +28,5 @@ jobs:
       # script's own ad-hoc signature is all an unsigned build gets.
       - name: Build app (universal, unsigned)
         run: |
-          ARCHES="arm64 x86_64" \
+          ARCHES="arm64 x86_64" FETCH_MLX_METALLIB=1 \
             Scripts/build-app.sh release

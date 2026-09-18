@@ -51,15 +51,10 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
           rm -f "$RUNNER_TEMP/cert.p12"
 
-      # Xcode 26+ ships without the Metal compiler; mlx-swift's .metal sources
-      # (StemKit) need it.
-      - name: Install Metal Toolchain
-        run: xcodebuild -downloadComponent MetalToolchain
-
       - name: Build app (universal)
         run: |
           MARKETING_VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER" \
-            ARCHES="arm64 x86_64" \
+            ARCHES="arm64 x86_64" FETCH_MLX_METALLIB=1 \
             Scripts/build-app.sh release
 
       - name: Codesign (Developer ID, hardened runtime)

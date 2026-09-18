@@ -25,12 +25,12 @@ SPARKLE_PUBLIC_ED_KEY="RHEhllstUuuVrVDCPGrbhg/8LivSzpuZB9X3u3xdV5o="
 BUILD_DIR="$ROOT/.build/app"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 
-# ARCHES="arm64 x86_64" builds a universal binary (CI release);
-# default is the host architecture for fast dev loops.
-ARCH_FLAGS=()
-for arch in ${ARCHES:-}; do
-  ARCH_FLAGS+=(--arch "$arch")
-done
+# ARCHES="arm64 x86_64" builds a universal binary (CI release); default is
+# the host architecture for fast dev loops. Each architecture is built on its
+# own and the slices are joined with lipo: a multi-`--arch` SwiftPM build
+# switches to XCBuild, which compiles mlx-swift's .metal sources and so needs
+# a Metal Toolchain that GitHub's runners do not reliably provide. The
+# kernels come from the pinned, sha-checked fetch below instead.
 
 # Extra SwiftPM flags from the environment, e.g. on a Command-Line-Tools-only
 # macOS 27 machine: SWIFT_BUILD_FLAGS="--build-system native" together with
@@ -42,13 +42,38 @@ for flag in ${SWIFT_BUILD_FLAGS:-}; do
 done
 
 # ${arr[@]+...} keeps macOS's bash 3.2 happy under set -u with empty arrays
-swift build -c "$CONF" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --product "$APP_NAME"
-BIN_PATH="$(swift build -c "$CONF" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)"
+build_slice() { # [triple] — prints nothing; sets SLICE_BIN_PATH
+  local triple_flags=()
+  [ -n "${1:-}" ] && triple_flags=(--triple "$1")
+  swift build -c "$CONF" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+    ${triple_flags[@]+"${triple_flags[@]}"} --product "$APP_NAME"
+  SLICE_BIN_PATH="$(swift build -c "$CONF" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+    ${triple_flags[@]+"${triple_flags[@]}"} --show-bin-path)"
+}
+
+SLICE_BINARIES=()
+if [ -n "${ARCHES:-}" ]; then
+  for arch in $ARCHES; do
+    build_slice "$arch-apple-macosx"
+    SLICE_BINARIES+=("$SLICE_BIN_PATH/$APP_NAME")
+    # Resources and the metallib search below use the first slice's tree;
+    # every slice carries the same resources.
+    BIN_PATH="${BIN_PATH:-$SLICE_BIN_PATH}"
+  done
+else
+  build_slice ""
+  BIN_PATH="$SLICE_BIN_PATH"
+  SLICE_BINARIES+=("$BIN_PATH/$APP_NAME")
+fi
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 
-cp "$BIN_PATH/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+if [ "${#SLICE_BINARIES[@]}" -gt 1 ]; then
+  lipo -create "${SLICE_BINARIES[@]}" -output "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+else
+  cp "${SLICE_BINARIES[0]}" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+fi
 chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # Embed Sparkle.framework (SwiftPM binary artifact) into Contents/Frameworks.
@@ -82,6 +107,11 @@ elif [ -f "$CMLX_METALLIB" ]; then
   METALLIB="$CMLX_METALLIB"
 else
   METALLIB="$(find "$ROOT/.build" -name 'mlx.metallib' -not -path "$BUILD_DIR/*" -print -quit 2>/dev/null || true)"
+fi
+if [ -z "$METALLIB" ] && [ "${FETCH_MLX_METALLIB:-0}" = "1" ]; then
+  # CI: fetch the pinned, sha-verified kernels rather than compile them.
+  "$SCRIPT_DIR/fetch-mlx-metallib.sh" "$BIN_PATH"
+  METALLIB="$BIN_PATH/mlx.metallib"
 fi
 if [ -n "$METALLIB" ]; then
   echo "mlx.metallib <- $METALLIB"

@@ -791,7 +791,7 @@ final class PlaybackEngine: @unchecked Sendable {
                     self.journalDeckName(state), bytes))
                 self.eventContinuation.yield(.streamDownloadCompleted(deck))
             }
-            loader.onCompleted = { [weak self, weak loader] _ in
+            loader.onCompleted = { [weak self, weak loader] in
                 guard let self, let loader,
                       let state = self.deckStates[deck],
                       case .stream(let current) = state.source, current === loader else { return }
@@ -1583,12 +1583,7 @@ final class PlaybackEngine: @unchecked Sendable {
             ("player", state.player), ("timePitch", state.timePitch),
             ("eq", state.eq), ("delay", state.delay),
         ]
-        let dir = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kumone/taps", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let stamp = ISO8601DateFormatter().string(from: Date())
-            .replacingOccurrences(of: ":", with: "")
+        let (dir, stamp) = Self.tapCaptureDirectoryAndStamp()
         var opened: [(String, URL)] = []
         let pending = ChainCaptureSet()
         for (stage, node) in stages {
@@ -1776,9 +1771,6 @@ final class PlaybackEngine: @unchecked Sendable {
                 self.masterLimiter.auAudioUnit.latency * 1000))
         }
     }
-
-    /// Test hook: whether the master limiter is currently in circuit.
-    var isMasterLimiterActive: Bool { queue.sync { masterLimiterActive } }
 
     /// **Pin the head compensation**, overriding the self-calibrating estimate
     /// (`AutoMixOverrides.headLatencyCompensationMS`). Nil hands the seam back
@@ -2198,6 +2190,25 @@ final class PlaybackEngine: @unchecked Sendable {
         return settings
     }
 
+    /// The taps folder and one ISO-8601 stamp for a capture. Separate from
+    /// `tapCaptureURL` because a chain capture writes four files that must
+    /// share a prefix (and puts the stamp in its journal line), so it takes
+    /// the stamp once and spells the names itself.
+    ///
+    /// The colons come out: they are legal in a POSIX name but read as path
+    /// separators to anything that still thinks in HFS paths.
+    private static func tapCaptureDirectoryAndStamp() -> (dir: URL, stamp: String) {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "")
+        return (KumoneDirectories.applicationSupport("taps"), stamp)
+    }
+
+    /// `~/Library/Application Support/Kumone/taps/<stamp>-<label>.caf`.
+    private static func tapCaptureURL(label: String) -> URL {
+        let (dir, stamp) = tapCaptureDirectoryAndStamp()
+        return dir.appendingPathComponent("\(stamp)-\(label).caf")
+    }
+
     /// Where the one output tap lives. `masterMixer`, not `mainMixerNode`:
     /// see `setOutputSampleSink`.
     private var outputTapNode: AVAudioNode { masterMixer }
@@ -2215,13 +2226,8 @@ final class PlaybackEngine: @unchecked Sendable {
         guard engine.isRunning else { return false }
         let format = outputTapNode.outputFormat(forBus: 0)
         guard format.sampleRate > 0 else { return false }
-        let dir = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kumone/taps", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let stamp = ISO8601DateFormatter().string(from: Date())
-            .replacingOccurrences(of: ":", with: "")
-        let url = dir.appendingPathComponent("\(stamp)-\(label).caf")
+        let url = Self.tapCaptureURL(label: label)
+        let dir = url.deletingLastPathComponent()
         guard let file = try? AVAudioFile(forWriting: url,
                                           settings: Self.captureFileSettings(format),
                                           commonFormat: .pcmFormatFloat32,
@@ -2239,7 +2245,9 @@ final class PlaybackEngine: @unchecked Sendable {
                 let rate = finished.processingFormat.sampleRate
                 Self.tapAnalysisQueue.async {
                     let level = Self.tapLevelDescription(of: url)
-                    Self.trimTapDirectory(dir)
+                    // Keep the newest 40 captures; the hunt needs specimens,
+                    // not an archive.
+                    EngineTrace.prune(dir, keeping: 40)
                     self?.queue.async {
                         // The regime goes on the same line as the numbers: a
                         // session's captures are read as a table, and "seams are
@@ -2379,22 +2387,6 @@ final class PlaybackEngine: @unchecked Sendable {
         guard length > 0 else { return nil }
         return (0..<Int(buffer.format.channelCount)).map {
             Array(UnsafeBufferPointer(start: data[$0], count: length))
-        }
-    }
-
-    /// Keep the newest 40 captures; the hunt needs specimens, not an archive.
-    private static func trimTapDirectory(_ dir: URL) {
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
-        let sorted = files.sorted {
-            let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
-            let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
-            return a > b
-        }
-        for stale in sorted.dropFirst(40) {
-            try? FileManager.default.removeItem(at: stale)
         }
     }
 

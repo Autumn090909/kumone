@@ -787,27 +787,17 @@ struct NowPlayingView: View {
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                #if os(macOS)
                 // All three queue orders on the one button; the cycle skips
                 // AutoMix wherever it could do nothing (AutoMix off, order
                 // off), so this row keeps its present width and its two-state
-                // behaviour there.
+                // behaviour there — as it does on iOS, which has no AutoMix at
+                // all. Only the three values below differ per platform.
                 circleButton(
-                    icon: player.queueOrder.symbolName, size: 14,
-                    tint: player.queueOrder != .listed ? Theme.accent : nil
-                ) {
-                    player.cycleQueueOrder()
-                }
+                    icon: queueOrderIcon, size: 14,
+                    tint: queueOrderIsActive ? Theme.accent : nil,
+                    action: cycleQueueOrder
+                )
                 .frame(maxWidth: .infinity)
-                #else
-                circleButton(
-                    icon: "shuffle", size: 14,
-                    tint: player.shuffleEnabled ? Theme.accent : nil
-                ) {
-                    player.toggleShuffle()
-                }
-                .frame(maxWidth: .infinity)
-                #endif
                 circleButton(icon: "backward.fill", size: 16) {
                     player.previous()
                 }
@@ -860,6 +850,35 @@ struct NowPlayingView: View {
             }
         }
         .buttonStyle(.pressable)
+    }
+
+    // MARK: - Queue-order control
+
+    /// The queue-order button's three platform-dependent values. macOS cycles
+    /// `listed → shuffled → autoMix`; iOS has no AutoMix and toggles shuffle.
+
+    private var queueOrderIcon: String {
+        #if os(macOS)
+        player.queueOrder.symbolName
+        #else
+        "shuffle"
+        #endif
+    }
+
+    private var queueOrderIsActive: Bool {
+        #if os(macOS)
+        player.queueOrder != .listed
+        #else
+        player.shuffleEnabled
+        #endif
+    }
+
+    private func cycleQueueOrder() {
+        #if os(macOS)
+        player.cycleQueueOrder()
+        #else
+        player.toggleShuffle()
+        #endif
     }
 
     private func circleButton(icon: String, size: CGFloat,

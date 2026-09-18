@@ -137,13 +137,6 @@ public enum StemSeparation {
         PlaybackJournal.note("stem runtime failed, separation retired: \(message)")
     }
 
-    /// Has the separation runtime died? Test/diagnostic hook.
-    public static var runtimeHasFailed: Bool {
-        box.lock.lock()
-        defer { box.lock.unlock() }
-        return box.runtimeFailed
-    }
-
     /// Whether a hand-over may be planned with `StemAvailability.ready`.
     public static var isAvailable: Bool { provider != nil }
 

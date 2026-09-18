@@ -289,11 +289,6 @@ enum StemTechnique: Sendable, Equatable {
         return !envelope.isPassThrough(.incomingVocal) || !envelope.isPassThrough(.incomingBed)
             || envelope.hasIncomingBedSplit
     }
-
-    var needsOutgoingStems: Bool {
-        guard case .custom(let envelope) = self else { return true }
-        return !envelope.isPassThrough(.outgoingVocal) || !envelope.isPassThrough(.outgoingBed)
-    }
 }
 
 /// A four-lane gain orchestration across one overlap.
@@ -423,7 +418,7 @@ public struct StemEnvelope: Sendable, Codable, Equatable {
                 }
                 db = value
             }
-            return db == 0 ? 1 : pow(10, db / 20)
+            return LoudnessCompensation.linearGain(db)
         }
     }
 
@@ -582,26 +577,21 @@ public struct StemEnvelope: Sendable, Codable, Equatable {
 
     /// The same value as a linear amplitude multiplier.
     public func gain(_ lane: Lane, at t: TimeInterval) -> Float {
-        let db = gainDB(lane, at: t)
-        return db == 0 ? 1 : pow(10, db / 20)
+        LoudnessCompensation.linearGain(gainDB(lane, at: t))
     }
 
     /// A short stable digest of every breakpoint, for render filenames and
-    /// report labels. Deliberately not `Hashable`'s seeded hash: that changes
-    /// per process, and a render cache keyed on it would never hit twice.
+    /// report labels. See `fnv1a` for why it is not `Hashable`'s seeded hash.
     public var signature: String {
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        var hash = fnv1aOffsetBasis
         for lane in Lane.allCases {
             for point in self[lane] {
                 for value in [point.t, Double(point.gainDB)] {
-                    var bits = UInt64(bitPattern: Int64((value * 1000).rounded()))
-                    for _ in 0..<8 {
-                        hash = (hash ^ (bits & 0xff)) &* 0x100_0000_01b3
-                        bits >>= 8
-                    }
+                    let bits = UInt64(bitPattern: Int64((value * 1000).rounded()))
+                    hash = fnv1a(littleEndian: bits, from: hash)
                 }
             }
-            hash = (hash ^ 0xff) &* 0x100_0000_01b3
+            hash = fnv1a(0xff, from: hash)
         }
         // Folded in only when it changes audio, so every envelope written
         // before the bed could be split — and every one whose split is
@@ -611,14 +601,11 @@ public struct StemEnvelope: Sendable, Codable, Equatable {
             for lane in BedSplit.lanes {
                 for point in split[lane] {
                     for value in [point.t, Double(point.gainDB)] {
-                        var bits = UInt64(bitPattern: Int64((value * 1000).rounded()))
-                        for _ in 0..<8 {
-                            hash = (hash ^ (bits & 0xff)) &* 0x100_0000_01b3
-                            bits >>= 8
-                        }
+                        let bits = UInt64(bitPattern: Int64((value * 1000).rounded()))
+                        hash = fnv1a(littleEndian: bits, from: hash)
                     }
                 }
-                hash = (hash ^ 0xfe) &* 0x100_0000_01b3
+                hash = fnv1a(0xfe, from: hash)
             }
         }
         return String(format: "%08x", UInt32(truncatingIfNeeded: hash))

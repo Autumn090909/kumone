@@ -241,39 +241,6 @@ public struct ModelStore: Sendable {
         return destination
     }
 
-    /// Same contract as ``ensureAvailable(_:progress:)``, but from
-    /// ``ModelDescriptor/releaseURL`` — so it works for the four-stem
-    /// checkpoint too, which upstream publishes only as a PyTorch pickle.
-    ///
-    /// The conversion path did not go away; it is how the released file is
-    /// *made* (`Scripts/fetch-4stem-checkpoint.sh`, then
-    /// `Scripts/publish-stem-models.sh`). This is how everyone else gets it.
-    public func ensureAvailableFromRelease(
-        _ descriptor: ModelDescriptor = .zfturboVocalsV1,
-        progress: (@Sendable (Double) -> Void)? = nil
-    ) async throws -> URL {
-        let destination = localURL(for: descriptor)
-
-        if FileManager.default.fileExists(atPath: destination.path) {
-            if (try? Self.verify(destination, against: descriptor)) != nil {
-                return destination
-            }
-            try? FileManager.default.removeItem(at: destination)
-        }
-
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true)
-
-        let temporary = try await download(
-            descriptor, from: descriptor.releaseURL, progress: progress)
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        try Self.verify(temporary, against: descriptor)
-
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: temporary, to: destination)
-        return destination
-    }
-
     // MARK: - Private
 
     private func download(

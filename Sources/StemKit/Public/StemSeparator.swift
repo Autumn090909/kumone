@@ -129,9 +129,6 @@ public final class StemSeparator: @unchecked Sendable {
     private let separator: RoFormerSeparator
     private let configuration: RoFormerConfiguration
 
-    /// Configuration the resident model was built with.
-    public var modelConfiguration: RoFormerConfiguration { configuration }
-
     /// Sample rate this separator requires its input to be at.
     public var requiredSampleRate: Double { configuration.sampleRate }
 

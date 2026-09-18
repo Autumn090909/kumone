@@ -103,11 +103,7 @@ struct AutoMixFeedbackEntry: Codable, Equatable {
 enum AutoMixFeedbackLog {
 
     static var fileURL: URL {
-        let support = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kumone", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        return support.appendingPathComponent("automix-feedback.jsonl")
+        KumoneDirectories.applicationSupport().appendingPathComponent("automix-feedback.jsonl")
     }
 
     /// The encoder the corpus is written with. ISO-8601 dates and sorted keys,
@@ -165,16 +161,12 @@ enum AutoMixFeedbackLog {
     /// Built by reflection over the struct's stored properties, which means a
     /// knob added later is picked up without anyone remembering to list it
     /// here — the failure mode of a hand-written list is a fingerprint that
-    /// silently stops distinguishing. Deliberately not `Hashable`'s seeded
-    /// hash, for the reason `StemEnvelope.signature` gives: that value changes
-    /// per process, and a corpus keyed on it could never be joined.
+    /// silently stops distinguishing. See `fnv1a` for why it is not
+    /// `Hashable`'s seeded hash.
     static func configFingerprint(_ config: TransitionPlanner.Config) -> String {
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        var hash = fnv1aOffsetBasis
         for child in Mirror(reflecting: config).children {
-            let text = "\(child.label ?? "?")=\(child.value);"
-            for byte in text.utf8 {
-                hash = (hash ^ UInt64(byte)) &* 0x100_0000_01b3
-            }
+            hash = fnv1a("\(child.label ?? "?")=\(child.value);".utf8, from: hash)
         }
         return String(format: "%08x", UInt32(truncatingIfNeeded: hash))
     }

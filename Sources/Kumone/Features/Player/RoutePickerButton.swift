@@ -1,4 +1,5 @@
 import AVKit
+import Combine
 import SwiftUI
 
 /// System AirPlay / output-route picker (`AVRoutePickerView`), styled to sit
@@ -153,7 +154,16 @@ private struct OutputDevicePanel: View {
     @ObservedObject var controller: AudioOutputController
     let dismiss: () -> Void
 
+    /// Keyboard highlight only. Hover lives inside each row (see `PanelRow`),
+    /// so moving the mouse across the list invalidates one row rather than
+    /// the whole panel.
     @State private var highlighted: Row?
+    /// Grouped once per device-list change instead of once per body pass:
+    /// `sections` dedupes, sorts and runs four filters.
+    @State private var sections: [AudioOutputSection] = []
+    /// Which row the mouse is over, for the arrow keys to start from. A plain
+    /// reference on purpose — writing it must not invalidate anything.
+    @State private var hovered = HoveredRow()
     @FocusState private var focused: Bool
 
     enum Row: Hashable {
@@ -162,8 +172,11 @@ private struct OutputDevicePanel: View {
         case soundSettings
     }
 
+    final class HoveredRow {
+        var row: Row?
+    }
+
     var body: some View {
-        let sections = AudioOutputDevices.sections(controller.devices)
         VStack(alignment: .leading, spacing: 0) {
             Text("输出设备")
                 .font(.system(size: 13, weight: .semibold))
@@ -214,7 +227,9 @@ private struct OutputDevicePanel: View {
         .onKeyPress(.upArrow) { move(by: -1, in: sections); return .handled }
         .onKeyPress(.return) { activateHighlighted() }
         .onKeyPress(.space) { activateHighlighted() }
+        .onReceive(controller.$devices) { sections = AudioOutputDevices.sections($0) }
         .onAppear {
+            sections = AudioOutputDevices.sections(controller.devices)
             controller.refresh()
             focused = true
         }
@@ -235,9 +250,9 @@ private struct OutputDevicePanel: View {
     private func deviceRow(
         _ row: Row, title: Text, subtitle: Text?, symbol: String, isSelected: Bool
     ) -> some View {
-        Button {
-            pick(row)
-        } label: {
+        PanelRow(isHighlighted: highlighted == row,
+                 onHover: { hover(row, $0) },
+                 action: { pick(row) }) {
             HStack(spacing: 10) {
                 ZStack {
                     Circle()
@@ -270,49 +285,34 @@ private struct OutputDevicePanel: View {
                         .foregroundStyle(Theme.accent)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(highlight(row))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 6)
-        .onHover { hover(row, $0) }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var settingsRow: some View {
-        Button {
-            pick(.soundSettings)
-        } label: {
+        PanelRow(isHighlighted: highlighted == .soundSettings,
+                 onHover: { hover(.soundSettings, $0) },
+                 action: { pick(.soundSettings) }) {
             HStack {
                 Text("声音设置…")
                     .font(.system(size: 13))
                 Spacer()
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(highlight(.soundSettings))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 6)
-        .onHover { hover(.soundSettings, $0) }
         .accessibilityHint("打开系统设置中的“声音”")
-    }
-
-    private func highlight(_ row: Row) -> some View {
-        RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
-            .fill(Color.primary.opacity(highlighted == row ? 0.08 : 0))
     }
 
     // MARK: Interaction
 
+    /// The mouse taking over clears the keyboard highlight, so exactly one row
+    /// is ever lit — but only when there *is* one to clear, which keeps an
+    /// ordinary mouse move free of any panel-level state write.
     private func hover(_ row: Row, _ inside: Bool) {
         if inside {
-            highlighted = row
-        } else if highlighted == row {
-            highlighted = nil
+            hovered.row = row
+            if highlighted != nil { highlighted = nil }
+        } else if hovered.row == row {
+            hovered.row = nil
         }
     }
 
@@ -326,7 +326,8 @@ private struct OutputDevicePanel: View {
     /// opened on its current value would.
     private func move(by step: Int, in sections: [AudioOutputSection]) {
         let all = rows(in: sections)
-        let anchor: Row = highlighted ?? {
+        let current = highlighted ?? hovered.row
+        let anchor: Row = current ?? {
             switch controller.selection {
             case .systemDefault: return .systemDefault
             case .device(let uid): return .device(uid: uid)
@@ -336,7 +337,7 @@ private struct OutputDevicePanel: View {
             highlighted = all.first
             return
         }
-        if highlighted == nil {
+        if current == nil {
             highlighted = anchor
             return
         }
@@ -366,6 +367,39 @@ private struct OutputDevicePanel: View {
     private func select(_ selection: AudioOutputSelection) {
         guard selection != controller.selection else { return }
         controller.select(selection)
+    }
+}
+
+/// One row of the panel, owning its own hover state.
+///
+/// The hover highlight used to live on the panel, so a mouse move across the
+/// list re-evaluated every row's body — including the grouping pass and each
+/// row's `AnyShapeStyle`s. Here it invalidates this row and nothing else.
+private struct PanelRow<Content: View>: View {
+    let isHighlighted: Bool
+    let onHover: (Bool) -> Void
+    let action: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            content()
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
+                        .fill(Color.primary.opacity(isHovered || isHighlighted ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .onHover { inside in
+            isHovered = inside
+            onHover(inside)
+        }
     }
 }
 

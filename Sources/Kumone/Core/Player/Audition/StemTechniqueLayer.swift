@@ -635,7 +635,7 @@ enum StemTechniqueLayer {
 
             switch technique {
             case .vocalDuck(let depthDB):
-                let target = pow(10, depthDB / 20)
+                let target = LoudnessCompensation.linearGain(depthDB)
                 controlVocal[k] = raisedCosine(t, 0, entry, 1, target)
                 controlAccompaniment[k] = 1
 

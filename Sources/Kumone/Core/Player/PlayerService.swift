@@ -242,15 +242,35 @@ final class PlayerService: ObservableObject {
 
     private var prefetchTask: Task<Void, Never>?
     private var prefetchedNext: PrefetchedNext?
-    private var transitionArmed = false
     private var pendingTransitionTrack: Track?
     /// The plan the engine is currently holding, kept so the stem pre-render
     /// knows which seam it is rendering for (and notices when a re-plan moves
     /// it). Nil whenever no hand-over is armed.
     private var armedPlan: PlannedTransition?
+    /// A hand-over is armed exactly when a plan is held for it.
+    private var transitionArmed: Bool { armedPlan != nil }
     /// The complete local file of the track now playing, when there is one —
     /// the outgoing source a stem pre-render reads.
     private var currentLocalURL: URL?
+    /// One parse of the outgoing track's `.lrc`, kept for as long as that file
+    /// stays the outgoing one. `Audition.Lyrics.timing(for:)` reads and parses
+    /// the sidecar off disk, and the 0.2 s progress tick asks for it on every
+    /// AutoMix rank step — so without this the same file is re-read five times
+    /// a second.
+    private var outgoingLyricCache: (url: URL, timing: TransitionPlanner.PlanContext.LyricTiming?)?
+
+    /// `Audition.Lyrics.timing(for:)` with that one-entry cache in front. Nil
+    /// for a track with no sidecar — which is also exactly when
+    /// `Audition.Lyrics.lineEnds(for:)` returns an empty grid, so
+    /// `outgoingLyricTiming(for:)?.lineEnds ?? []` is the same value it gave.
+    private func outgoingLyricTiming(for url: URL?)
+        -> TransitionPlanner.PlanContext.LyricTiming? {
+        guard let url else { return nil }
+        if let cached = outgoingLyricCache, cached.url == url { return cached.timing }
+        let timing = Audition.Lyrics.timing(for: url)
+        outgoingLyricCache = (url, timing)
+        return timing
+    }
     /// Beat/energy analysis of the track now playing, once its full file is
     /// on disk. Feeds the outgoing side of TransitionPlanner.
     private var currentAnalysis: TrackAnalysis?
@@ -307,7 +327,6 @@ final class PlayerService: ObservableObject {
             AudioSpectrum.shared.ingest(buffer)
         }
 
-        #if os(macOS)
         // macOS output routing (incl. AirPlay endpoints the system publishes):
         // the controller owns the device list and the user's choice, and this
         // is the only place it can reach the engine. Restores the persisted
@@ -316,34 +335,6 @@ final class PlayerService: ObservableObject {
         AudioOutputController.shared.attach { deviceID in
             engine.setOutputDevice(deviceID)
         }
-        #endif
-
-        #if os(iOS)
-        // The engine configures the AVAudioSession lazily on first start.
-
-        // Resume after interruptions (phone calls, WeChat voice messages, …).
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification,
-            object: AVAudioSession.sharedInstance(), queue: .main
-        ) { [weak self] note in
-            MainActor.assumeIsolated {
-                self?.handleAudioInterruption(note)
-            }
-        }
-        // Pause when the output route disappears (headphones unplugged).
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance(), queue: .main
-        ) { [weak self] note in
-            MainActor.assumeIsolated {
-                guard let self,
-                      let reasonValue = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-                      let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue),
-                      reason == .oldDeviceUnavailable, self.isPlaying else { return }
-                self.pause()
-            }
-        }
-        #endif
 
         let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -395,39 +386,6 @@ final class PlayerService: ObservableObject {
 
     /// Set while the user drags the seek bar so the time observer doesn't fight the thumb.
     var isScrubbing = false
-
-    #if os(iOS)
-    private var wasPlayingBeforeInterruption = false
-
-    private func handleAudioInterruption(_ note: Notification) {
-        guard let typeValue = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-        switch type {
-        case .began:
-            wasPlayingBeforeInterruption = isPlaying
-            if isPlaying {
-                // The system already silenced us; mark the engine paused too,
-                // or the .ended resume() below is a guarded no-op.
-                engine.pause()
-                enginePaused = true
-                isPlaying = false
-                NowPlayingManager.shared.updateElapsed(progress, rate: 0)
-            }
-        case .ended:
-            let optionsValue = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-            guard wasPlayingBeforeInterruption, options.contains(.shouldResume) else { return }
-            wasPlayingBeforeInterruption = false
-            try? AVAudioSession.sharedInstance().setActive(true)
-            engine.resume()
-            enginePaused = false
-            isPlaying = true
-            NowPlayingManager.shared.updateElapsed(progress, rate: 1)
-        @unknown default:
-            break
-        }
-    }
-    #endif
 
     // MARK: - Entry points
 
@@ -605,24 +563,14 @@ final class PlayerService: ObservableObject {
         setQueueOrder(shuffleEnabled ? .listed : .shuffled)
     }
 
-    /// The AutoMix order's own switch. Mutual exclusion with shuffle is not a
-    /// rule enforced here — it is `QueueOrder` having one value at a time.
-    func toggleAutoMixOrder() {
-        setQueueOrder(queueOrder == .autoMix ? .listed : .autoMix)
-    }
-
     /// Whether the AutoMix order can do anything at all. It picks by planning,
     /// and planning needs analyses — which iOS and an AutoMix-off player never
     /// compute — and it downloads candidates the listener did not ask for,
     /// which is its own opt-in. The shuffle button cycles through two states
     /// rather than three when this is false.
     var autoMixOrderAvailable: Bool {
-        #if os(iOS)
-        return false
-        #else
         return SettingsManager.shared.automixEnabled
             && SettingsManager.shared.automixOrderEnabled
-        #endif
     }
 
     /// The single queue-order control (predev §2.1, now the only one): the
@@ -686,26 +634,6 @@ final class PlayerService: ObservableObject {
         // Repeat-one forbids auto hand-overs; the other modes change what
         // comes after the final queue entry.
         schedulePrefetch()
-    }
-
-    /// Single-button mode cycle for the iOS minimal transport row:
-    /// sequential → loop all → loop one → shuffle → sequential.
-    func cyclePlaybackMode() {
-        guard !isFMMode else { return }
-        if shuffleEnabled {
-            toggleShuffle()
-            repeatMode = .off
-        } else {
-            switch repeatMode {
-            case .off:
-                repeatMode = .all
-            case .all:
-                repeatMode = .one
-            case .one:
-                repeatMode = .off
-                toggleShuffle()
-            }
-        }
     }
 
     /// Jump to a track in the upcoming list (queue panel click).
@@ -875,7 +803,6 @@ final class PlayerService: ObservableObject {
     /// compared against it.
     private func disarmTransition(keepingPrerender: Bool = false) {
         engine.cancelScheduledTransition()
-        transitionArmed = false
         pendingTransitionTrack = nil
         armedPlan = nil
         AutoMixDebugModel.shared.setPlan(nil)
@@ -1159,7 +1086,6 @@ final class PlayerService: ObservableObject {
             recordDebugSeam(outcome)
             adoptTransitionedTrack(on: to)
         case .transitionCompleted:
-            transitionArmed = false
             armedPlan = nil
             AutoMixDebugModel.shared.setPlan(nil)
             cancelStemPrerender()
@@ -1336,7 +1262,6 @@ final class PlayerService: ObservableObject {
         let planned = makeTransitionPlan(for: next)
         engine.scheduleTransition(planned, from: activeDeck, to: incoming)
         armedPlan = planned
-        transitionArmed = true
         noteArmedSignature(planned)
         pendingTransitionTrack = next.track
         publishDebugPlan(planned, next: next)
@@ -1459,9 +1384,6 @@ final class PlayerService: ObservableObject {
     private var journalledScoreRefusal: ScoreRefusalKey?
 
     private func planTransition(for next: PrefetchedNext) -> PlannedTransition {
-        #if os(iOS)
-        return .plain(.gapless)
-        #else
         guard transitionsWanted else { return .plain(.gapless) }
         if currentAnalysis == nil || next.analysis == nil {
             // Analyses not ready (first listen, current track still
@@ -1525,9 +1447,8 @@ final class PlayerService: ObservableObject {
         // lines of it. Nil where there is no `.lrc`, which is the decision this
         // path made before the rule existed.
         let context = TransitionPlanner.PlanContext(
-            outgoingLyricLineEnds: currentLocalURL
-                .map { Audition.Lyrics.lineEnds(for: $0) } ?? [],
-            outgoingLyricTiming: currentLocalURL.flatMap { Audition.Lyrics.timing(for: $0) },
+            outgoingLyricLineEnds: outgoingLyricTiming(for: currentLocalURL)?.lineEnds ?? [],
+            outgoingLyricTiming: outgoingLyricTiming(for: currentLocalURL),
             incomingLyricTiming: Audition.Lyrics.timing(for: next.localURL),
             sameAlbum: outgoingAlbum != 0 && outgoingAlbum == incomingAlbum,
             listedAdjacent: listedAdjacent)
@@ -1555,7 +1476,6 @@ final class PlayerService: ObservableObject {
                     ?? "force requested but impossible: no beat-matched plan and no blocking gate")
         }
         return planned
-        #endif
     }
 
     // MARK: - Stem pre-render
@@ -1687,6 +1607,17 @@ final class PlayerService: ObservableObject {
         remaining < fourLaneRunway && remaining >= twoLaneRunway
     }
 
+    /// How many lanes a started render is getting, in the journal's and the
+    /// panel's shared vocabulary. `"0"` is a whole-mix score: no separator
+    /// consulted on either side.
+    nonisolated static func stemPrerenderLaneTag(
+        separates: Bool, fourLane: Bool, degraded: Bool
+    ) -> String {
+        guard separates else { return "0" }
+        guard degraded else { return fourLane ? "4" : "2" }
+        return "2 (degraded from 4: runway)"
+    }
+
     /// **Whether a refusal recorded earlier still stands.**
     ///
     /// A refusal is a statement about the clock — *this much left, that much
@@ -1702,17 +1633,6 @@ final class PlayerService: ObservableObject {
     /// 105 s is ample for a 74.1 s render, and the seam was refused anyway,
     /// because the refusal had been filed as "this seam has had its one
     /// attempt". It has not: it had one attempt *at 60 s*.
-    /// How many lanes a started render is getting, in the journal's and the
-    /// panel's shared vocabulary. `"0"` is a whole-mix score: no separator
-    /// consulted on either side.
-    nonisolated static func stemPrerenderLaneTag(
-        separates: Bool, fourLane: Bool, degraded: Bool
-    ) -> String {
-        guard separates else { return "0" }
-        guard degraded else { return fourLane ? "4" : "2" }
-        return "2 (degraded from 4: runway)"
-    }
-
     nonisolated static func stemPrerenderRefusalStands(
         remaining: TimeInterval, runway: TimeInterval
     ) -> Bool {
@@ -1729,6 +1649,18 @@ final class PlayerService: ObservableObject {
     /// writes, and a machine that is doing other things at the same time.
     nonisolated private static let stemPrerenderMargin: TimeInterval = 15
 
+    /// What a side costs when it is split four ways instead of two.
+    ///
+    /// The flat `1 x overlap` per side above was measured against the vocals
+    /// checkpoint, which runs a 12 s window in 5.5 s on an M4 — comfortably
+    /// inside its own budget. The four-stem checkpoint is a 131 M-parameter
+    /// model against a 34 M one and takes **21.7 s** for the same window, which
+    /// is 1.8x the term this formula charges rather than 0.46x of it. Charging
+    /// it twice is the honest reading, rounded up, and it is what stops a
+    /// four-lane bed from starting a render that then gets abandoned at the
+    /// guard with the Metal time already spent.
+    nonisolated static let stemPrerenderFourLaneFactor: Double = 2
+
     /// How much runway one seam's pre-render actually needs.
     ///
     /// This is the arithmetic that was hiding inside the flat 60 s lead — "a
@@ -1744,6 +1676,7 @@ final class PlayerService: ObservableObject {
     /// and the re-render was then refused for being late even when there was
     /// ample time to do it. A 16 s overlap needs 47 s; being handed 49 s is not
     /// a problem, and now it is not treated as one.
+    ///
     /// `separatesStems` false is a **score-only** segment: whole-mix gain lanes,
     /// no separator consulted on either side (`WholeMixLaneLayer`). The
     /// separation term is then not small, it is *absent* — what is left is one
@@ -1760,18 +1693,6 @@ final class PlayerService: ObservableObject {
     /// hand-over that would need 47 s of runway with stems on both sides needs
     /// 31 s with a bed — which is what keeps the one stem-bearing gesture
     /// inside the 120 s decision lead the predev budgets for (§2.2).
-    /// What a side costs when it is split four ways instead of two.
-    ///
-    /// The flat `1 x overlap` per side above was measured against the vocals
-    /// checkpoint, which runs a 12 s window in 5.5 s on an M4 — comfortably
-    /// inside its own budget. The four-stem checkpoint is a 131 M-parameter
-    /// model against a 34 M one and takes **21.7 s** for the same window, which
-    /// is 1.8x the term this formula charges rather than 0.46x of it. Charging
-    /// it twice is the honest reading, rounded up, and it is what stops a
-    /// four-lane bed from starting a render that then gets abandoned at the
-    /// guard with the Metal time already spent.
-    nonisolated static let stemPrerenderFourLaneFactor: Double = 2
-
     nonisolated static func stemPrerenderRunway(
         overlapDuration: TimeInterval, separatesStems: Bool = true,
         sides: Double = stemPrerenderSidesPerSeam,
@@ -2263,12 +2184,8 @@ final class PlayerService: ObservableObject {
     /// means no analyses are computed at all, so there is nothing to compensate
     /// with either.
     private var loudnessCompensationEnabled: Bool {
-        #if os(iOS)
-        return false
-        #else
         return SettingsManager.shared.automixEnabled
             && SettingsManager.shared.loudnessCompensationEnabled
-        #endif
     }
 
     /// The playback trim to load a track at, given whatever analysis is in hand.
@@ -2294,15 +2211,11 @@ final class PlayerService: ObservableObject {
     /// inside a transition, so it can never be the reason an analysis is
     /// computed.
     private var analysisWanted: Bool {
-        #if os(iOS)
-        return false
-        #else
         let settings = SettingsManager.shared
         return Self.analysisWanted(master: settings.automixEnabled,
                                    transitions: settings.automixTransitionsEnabled,
                                    order: settings.automixOrderEnabled,
                                    loudness: settings.loudnessCompensationEnabled)
-        #endif
     }
 
     /// The rule above as a pure function, so it can be stated once and tested
@@ -2316,12 +2229,8 @@ final class PlayerService: ObservableObject {
     /// and the transitions sub-switch, and nothing else — an analysis computed
     /// for the loudness trim must not quietly buy a crossfade.
     private var transitionsWanted: Bool {
-        #if os(iOS)
-        return false
-        #else
         return SettingsManager.shared.automixEnabled
             && SettingsManager.shared.automixTransitionsEnabled
-        #endif
     }
 
     /// Whether AutoMix may spend the GPU separating stems.
@@ -2332,13 +2241,9 @@ final class PlayerService: ObservableObject {
     /// and the setting is the consent half. Without both, every gesture plays
     /// its whole-mix form and nothing says so out loud.
     private var stemSeparationAllowed: Bool {
-        #if os(iOS)
-        return false
-        #else
         return transitionsWanted
             && SettingsManager.shared.automixStemsEnabled
             && StemSeparation.isAvailable
-        #endif
     }
 
     /// Sidecar-cached analysis, computing (and persisting) it on a miss.
@@ -2415,7 +2320,11 @@ final class PlayerService: ObservableObject {
                   self.currentTrack?.id == trackID, self.isPlaying else { return }
             self.engine.journalAudioUnitReadback("t+25s")
             // The "muffled" phase specimen; its bright counterpart is the
-            // engine's own capture at overlap begin.
+            // engine's own capture at overlap begin. Eight seconds of output is
+            // a ~3 MB CAF on disk *per track*, so it is tied to the trace
+            // switch rather than taken from every listener all the time — the
+            // AU readback lines above are free and stay unconditional.
+            guard AutoMixDebugModel.shared.overrides.verboseEngineTrace else { return }
             self.engine.captureOutputTap(seconds: 8, label: "t25-\(trackID)")
         }
     }
@@ -2605,8 +2514,7 @@ final class PlayerService: ObservableObject {
             _ = selector.pick(
                 outgoing: currentTrack, outgoingAnalysis: currentAnalysis, pool: pool,
                 plannerConfig: plannerConfig,
-                outgoingLyricLineEnds: currentLocalURL
-                    .map { Audition.Lyrics.lineEnds(for: $0) } ?? [])
+                outgoingLyricLineEnds: outgoingLyricTiming(for: currentLocalURL)?.lineEnds ?? [])
             Self.noteIfSlow("debug-preview", (ContinuousClock.now - start).milliseconds,
                             detail: "pool=\(pool.count)")
         }
@@ -3070,8 +2978,7 @@ final class PlayerService: ObservableObject {
         let winner = selector.pick(
             outgoing: currentTrack, outgoingAnalysis: currentAnalysis, pool: pool,
             plannerConfig: plannerConfig,
-            outgoingLyricLineEnds: currentLocalURL
-                .map { Audition.Lyrics.lineEnds(for: $0) } ?? [])
+            outgoingLyricLineEnds: outgoingLyricTiming(for: currentLocalURL)?.lineEnds ?? [])
         Self.noteIfSlow("pick", (ContinuousClock.now - pickStart).milliseconds,
                         detail: "pool=\(pool.count)")
         // Good enough is good enough: the tier is the dominant term, so a
@@ -3478,10 +3385,7 @@ final class PlayerService: ObservableObject {
     }
 
     private static var stateFileURL: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kumone", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        return support.appendingPathComponent("player-state.json")
+        KumoneDirectories.applicationSupport().appendingPathComponent("player-state.json")
     }
 }
 #endif

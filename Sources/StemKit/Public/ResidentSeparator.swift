@@ -82,7 +82,16 @@ public final class ResidentStemSeparator: @unchecked Sendable {
     /// Where MLX will find its kernels, if it can: beside the running binary
     /// (what `fetch-mlx-metallib.sh` installs), inside the app bundle, or in a
     /// resource bundle SwiftPM built with Xcode.
-    public static func metallibURL() -> URL? {
+    ///
+    /// Answered once per process. The launch path asks twice within a few
+    /// lines (`isRunnable()` then `hasFourStem()`), and the walk enumerates
+    /// every loaded bundle and framework plus the contents of the resource
+    /// directory — none of which can change while the process runs.
+    public static func metallibURL() -> URL? { cachedMetallibURL }
+
+    private static let cachedMetallibURL: URL? = findMetallib()
+
+    private static func findMetallib() -> URL? {
         var candidates: [URL] = []
         if let executable = Bundle.main.executableURL?.deletingLastPathComponent() {
             candidates.append(executable.appendingPathComponent("mlx.metallib"))

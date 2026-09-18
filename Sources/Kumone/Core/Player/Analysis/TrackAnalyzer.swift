@@ -1196,7 +1196,6 @@ enum TrackAnalyzer {
         return num / (da * db).squareRoot()
     }
 
-    private static func clamp01(_ v: Double) -> Double { min(1, max(0, v)) }
 
     // MARK: - Vocal activity detection
 

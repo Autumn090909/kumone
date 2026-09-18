@@ -63,18 +63,14 @@ struct StemModelSpec: Identifiable, Sendable, Equatable {
     /// `~/Library/Application Support/Kumone/Models/` — the directory
     /// `ModelStore` reads. Application Support, not Caches: the system must not
     /// be free to evict a download the user explicitly asked for.
-    static var modelsDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first ?? URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support")
-        return base.appendingPathComponent("Kumone/Models", isDirectory: true)
-    }
+    static var modelsDirectory: URL { KumoneDirectories.applicationSupport("Models") }
 }
 
 /// Where one model stands, as far as the settings page is concerned.
 enum StemModelState: Equatable, Sendable {
     case notInstalled
-    /// `progress` is 0...1 and best-effort; `bytes` is what has actually landed.
-    case downloading(progress: Double, bytes: Int64)
+    /// 0...1, best-effort: the delegate coalesces byte-count callbacks.
+    case downloading(progress: Double)
     /// Hashing 264 MB takes a moment and the UI should say so rather than
     /// look frozen between "100%" and "已安装".
     case verifying
@@ -164,8 +160,6 @@ public final class StemModelDownloader: ObservableObject {
 
     var allInstalled: Bool { specs.allSatisfy { state(for: $0).isInstalled } }
 
-    var isWorking: Bool { specs.contains { state(for: $0).isBusy } }
-
     // MARK: - Refreshing
 
     /// Re-read disk. Cheap: existence and size only, so it is safe to call on
@@ -195,37 +189,46 @@ public final class StemModelDownloader: ObservableObject {
     /// as an incomprehensible MLX crash mid-transition. The bad file is deleted
     /// so the retry button starts from nothing.
     func verifyInstalled(force: Bool = false) async {
-        for spec in specs where state(for: spec).isInstalled {
-            if !force && verified.contains(spec.id) { continue }
-            let url = localURL(for: spec)
-            let expected = spec.sha256
-            let ok = await Task.detached(priority: .utility) {
-                (try? Self.sha256(of: url)) == expected
-            }.value
-            guard state(for: spec).isInstalled else { continue }
+        let pending = specs.filter {
+            state(for: $0).isInstalled && (force || !verified.contains($0.id))
+        }
+        guard !pending.isEmpty else { return }
+
+        // Both checkpoints hash at once: 264 MB and 67 MB in sequence is a
+        // second of wall clock the settings page would spend looking idle.
+        let results = await withTaskGroup(of: (String, Bool).self) { group in
+            for spec in pending {
+                let url = localURL(for: spec)
+                let id = spec.id
+                let expected = spec.sha256
+                group.addTask(priority: .utility) {
+                    (id, (try? Self.sha256(of: url)) == expected)
+                }
+            }
+            var found: [String: Bool] = [:]
+            for await (id, ok) in group { found[id] = ok }
+            return found
+        }
+
+        for spec in pending {
+            guard let ok = results[spec.id], state(for: spec).isInstalled else { continue }
             if ok {
                 verified.insert(spec.id)
                 continue
             }
             verified.remove(spec.id)
-            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: localURL(for: spec))
             states[spec.id] = .failed(String(localized: "校验未通过，请重新下载"))
         }
     }
 
     // MARK: - Downloading
 
-    func downloadAll() {
-        for spec in specs where !state(for: spec).isInstalled {
-            download(spec)
-        }
-    }
-
     /// Start (or restart) one model's download. A second call while it runs is
     /// ignored rather than racing a duplicate task onto the same destination.
     func download(_ spec: StemModelSpec) {
         guard tasks[spec.id] == nil else { return }
-        states[spec.id] = .downloading(progress: 0, bytes: 0)
+        states[spec.id] = .downloading(progress: 0)
 
         let destination = localURL(for: spec)
         let directory = self.directory
@@ -274,7 +277,7 @@ public final class StemModelDownloader: ObservableObject {
     private func report(_ spec: StemModelSpec, received: Int64, total: Int64) {
         guard case .downloading = state(for: spec) else { return }
         let fraction = total > 0 ? min(1, Double(received) / Double(total)) : 0
-        states[spec.id] = .downloading(progress: fraction, bytes: received)
+        states[spec.id] = .downloading(progress: fraction)
     }
 
     private func finish(_ spec: StemModelSpec, state: StemModelState) {
@@ -354,6 +357,11 @@ enum StemModelFetcher {
         private let progress: @Sendable (Int64, Int64) -> Void
         private let lock = NSLock()
         private var finished = false
+        /// Progress coalescing. URLSession reports every written chunk — for a
+        /// 264 MB download that is thousands of callbacks, each of which used
+        /// to hop to the main actor to move a bar by a pixel it cannot show.
+        private var lastFraction = -1.0
+        private var lastReportedAt = Date.distantPast
         var continuation: CheckedContinuation<URL, Error>?
 
         init(expectedBytes: Int64, progress: @escaping @Sendable (Int64, Int64) -> Void) {
@@ -379,6 +387,22 @@ enum StemModelFetcher {
                         totalBytesWritten: Int64,
                         totalBytesExpectedToWrite: Int64) {
             let total = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : expectedBytes
+            let fraction = total > 0 ? min(1, Double(totalBytesWritten) / Double(total)) : 0
+
+            lock.lock()
+            let now = Date()
+            // Half a percent or 100 ms, whichever comes first — and the last
+            // one always lands, so the bar is never left short of full.
+            let worth = fraction >= 1
+                || fraction - lastFraction >= 0.005
+                || now.timeIntervalSince(lastReportedAt) >= 0.1
+            if worth {
+                lastFraction = fraction
+                lastReportedAt = now
+            }
+            lock.unlock()
+
+            guard worth else { return }
             progress(totalBytesWritten, total)
         }
 

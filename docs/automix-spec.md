@@ -82,8 +82,7 @@ final class PlaybackEngine {          // 内部专用串行队列，非 MainActo
 - 目录：`~/Library/Application Support/Kumone/Analysis/`（**不是** Caches，不随缓存清理消失）。
 - 文件：`<trackID>.json`，一曲一份，内容为 `{ analysis, level, source }`——只按 trackID 索引，**不含音质等级**。
 - 读：`loadAnalysis(forTrackID:)` / `analyses(forTrackIDs:)`，命中任何等级算出的结果（`standard` 的分析足够排序与规划用）；`version != TrackAnalysis.currentVersion` 视为未命中。
-- 写：`storeAnalysis(_:forTrackID:level:source:)` 按音质优先级——高等级覆盖低等级，低等级永不覆盖高等级，同级覆盖（重算生效）。等级阶梯与旧 sidecar 一致：`standard < higher < exhigh < lossless < hires`，未知等级排最前。
-- 迁移：首次访问时把音频缓存目录里遗留的 `<key>.analysis.json` 全部导入（同样走优先级）并删除，之后写入 marker，一次性完成。
+- 写：`storeAnalysis(_:forTrackID:level:source:)` 按音质优先级——高等级覆盖低等级，低等级永不覆盖高等级，同级覆盖（重算生效）。等级阶梯：`standard < higher < exhigh < lossless < hires`，未知等级排最前。
 - 无容量上限（几千曲也只有几十 MB），但提供 `clear()` 与 `totalUsageBytes()` 供设置页使用。
 
 ### 启播路径（ProgressiveLoader）

@@ -200,5 +200,14 @@ enum LoudnessCompensation {
 
     /// dB → linear gain, the multiplier a fader is scaled by.
     static func gain(fromDB db: Double) -> Float { Float(pow(10.0, db / 20.0)) }
+
+    /// The same conversion for envelope breakpoints, whose gains are `Float`
+    /// already.
+    ///
+    /// A separate name rather than an overload, for two reasons: an untyped
+    /// `0` at a call site could not tell the two apart, and they do not round
+    /// identically — this one rounds once instead of twice, which is what
+    /// every rendered envelope so far was computed with.
+    static func linearGain(_ db: Float) -> Float { db == 0 ? 1 : pow(10, db / 20) }
 }
 #endif

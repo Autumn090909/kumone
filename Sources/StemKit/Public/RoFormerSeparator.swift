@@ -79,25 +79,6 @@ public struct RoFormerProgress: Sendable {
     public let elapsedSeconds: Double
 }
 
-// MARK: - Delegate Protocol
-
-/// Delegate protocol for fire-and-forget separation progress.
-@MainActor
-public protocol RoFormerProgressDelegate: AnyObject {
-    /// Called when separation progress updates.
-    func roFormer(
-        _ separator: RoFormerSeparator,
-        didUpdateProgress progress: Float,
-        stage: RoFormerStage
-    )
-
-    /// Called when separation completes (success or failure).
-    func roFormer(
-        _ separator: RoFormerSeparator,
-        didCompleteWithResult result: Result<StemResult, RoFormerError>
-    )
-}
-
 // MARK: - RoFormerSeparator
 
 /// Kim Mel-RoFormer vocal separator.
@@ -106,73 +87,25 @@ public protocol RoFormerProgressDelegate: AnyObject {
 /// (228M parameters, ~12.6 dB SDR). Processes audio in 8-second chunks
 /// with 50% overlap for seamless results.
 ///
-/// Three API styles are available:
-///
-/// **Async/await** (recommended):
-/// ```swift
-/// let separator = try await RoFormerSeparator(weightsDirectory: weightsURL)
-/// let result = try await separator.separateVocals(from: inputURL, to: outputDir)
-/// print("Vocals at: \(result.vocalsURL)")
-/// ```
-///
-/// **AsyncThrowingStream** (progress tracking):
-/// ```swift
-/// for try await progress in separator.separationStream(from: inputURL, to: outputDir) {
-///     print("Progress: \(progress.fraction)")
-/// }
-/// ```
-///
-/// **Delegate** (fire-and-forget):
-/// ```swift
-/// separator.delegate = self
-/// separator.separateVocals(from: inputURL, to: outputDir)
-/// ```
+/// The one entry point is ``separate(samples:)``: samples in, stems out, with
+/// the caller owning file I/O. `StemSeparator` wraps it.
 public final class RoFormerSeparator: @unchecked Sendable {
 
-    // MARK: - Properties
-
-    /// Delegate for fire-and-forget progress reporting.
-    @MainActor public weak var delegate: RoFormerProgressDelegate?
-
     private let model: MelRoFormer
-    private let audioIO: AudioIO
     private let config: RoFormerConfiguration
     private let cancelFlag: OSAllocatedUnfairLock<Bool>
 
     // MARK: - Initialization
 
-    /// Create a separator around an already-loaded model.
-    ///
-    /// Use this when the model's lifecycle is owned elsewhere — e.g. a host that paged the
-    /// weights in via ``MelRoFormer/fromPretrained(_:configuration:hub:progress:)`` and wants the
-    /// separator to reuse that single resident instance rather than load weights again. The
-    /// `configuration` must match the one the model was built with (it drives chunking / STFT).
-    ///
-    /// - Parameters:
-    ///   - model: A `MelRoFormer` with weights already loaded.
-    ///   - configuration: Processing configuration (must match `model`'s; default: Kim Vocal 2).
-    public init(
-        model: MelRoFormer,
-        configuration: RoFormerConfiguration = .kimVocal2
-    ) {
-        self.config = configuration
-        self.audioIO = AudioIO()
-        self.cancelFlag = OSAllocatedUnfairLock(initialState: false)
-        MLX.Memory.cacheLimit = configuration.gpuCacheLimit
-        self.model = model
-    }
-
     /// Create a separator from an explicit safetensors file path.
     ///
     /// Kumone resolves checkpoints through ``ModelStore``, which names files itself and
-    /// verifies them by digest, so the directory-plus-conventional-filename form below is
-    /// not expressive enough.
+    /// verifies them by digest.
     public init(
         weightsFile: URL,
         configuration: RoFormerConfiguration
     ) async throws {
         self.config = configuration
-        self.audioIO = AudioIO()
         self.cancelFlag = OSAllocatedUnfairLock(initialState: false)
         MLX.Memory.cacheLimit = configuration.gpuCacheLimit
 
@@ -183,217 +116,6 @@ public final class RoFormerSeparator: @unchecked Sendable {
             throw RoFormerError.weightsNotFound(weightsFile.path)
         }
         self.model = model
-    }
-
-    /// Create a new RoFormer separator, loading model weights from disk.
-    ///
-    /// - Parameters:
-    ///   - weightsDirectory: Directory containing `mel_roformer_vocals.safetensors`.
-    ///   - configuration: Model and processing configuration (default: Kim Vocal 2).
-    /// - Throws: `RoFormerError.weightsNotFound` if weights file is missing.
-    public init(
-        weightsDirectory: URL,
-        configuration: RoFormerConfiguration = .kimVocal2
-    ) async throws {
-        self.config = configuration
-        self.audioIO = AudioIO()
-        self.cancelFlag = OSAllocatedUnfairLock(initialState: false)
-
-        // Set GPU memory cache limit
-        MLX.Memory.cacheLimit = configuration.gpuCacheLimit
-
-        // Build model architecture
-        let model = MelRoFormer(config: configuration)
-
-        // Load weights
-        let weightsURL = weightsDirectory.appendingPathComponent(WeightLoader.vocalsWeightsFile)
-        do {
-            try WeightLoader.loadWeights(into: model, from: weightsURL)
-        } catch {
-            throw RoFormerError.weightsNotFound(weightsURL.path)
-        }
-
-        self.model = model
-    }
-
-    // MARK: - Public API: Async/Await
-
-    /// Separate vocals from an audio file.
-    ///
-    /// - Parameters:
-    ///   - inputURL: Path to input audio file (WAV, MP3, FLAC, M4A).
-    ///   - outputURL: Directory for output files.
-    /// - Returns: `StemResult` with URLs to separated vocals and accompaniment.
-    /// - Throws: `RoFormerError` on failure or cancellation.
-    public func separateVocals(
-        from inputURL: URL,
-        to outputURL: URL
-    ) async throws -> StemResult {
-        cancelFlag.withLock { $0 = false }
-        let startTime = CFAbsoluteTimeGetCurrent()
-
-        // Load audio
-        let (audio, sampleCount) = try loadAudio(from: inputURL)
-        let durationSeconds = Double(sampleCount) / config.sampleRate
-
-        try checkCancelled()
-
-        // Run separation
-        let separated = try await separateChunked(
-            audio,
-            sampleCount: sampleCount,
-            startTime: startTime,
-            progressHandler: nil
-        )
-
-        try checkCancelled()
-
-        // Write output
-        let result = try writeOutput(
-            stems: separated,
-            original: audio,
-            to: outputURL,
-            sampleRate: config.sampleRate,
-            durationSeconds: durationSeconds,
-            startTime: startTime
-        )
-
-        return result
-    }
-
-    // MARK: - Public API: AsyncThrowingStream
-
-    /// Separate vocals with progress streaming.
-    ///
-    /// - Parameters:
-    ///   - inputURL: Path to input audio file.
-    ///   - outputURL: Directory for output files.
-    /// - Returns: Stream of `RoFormerProgress` updates, yielding final result on completion.
-    public func separationStream(
-        from inputURL: URL,
-        to outputURL: URL
-    ) -> AsyncThrowingStream<RoFormerProgress, Error> {
-        AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    self.cancelFlag.withLock { $0 = false }
-                    let startTime = CFAbsoluteTimeGetCurrent()
-
-                    // Load audio
-                    let (audio, sampleCount) = try self.loadAudio(from: inputURL)
-                    let durationSeconds = Double(sampleCount) / self.config.sampleRate
-
-                    continuation.yield(RoFormerProgress(
-                        fraction: 0.05,
-                        stage: .loading,
-                        elapsedSeconds: CFAbsoluteTimeGetCurrent() - startTime
-                    ))
-
-                    try self.checkCancelled()
-
-                    // Run separation with progress
-                    let separated = try await self.separateChunked(
-                        audio,
-                        sampleCount: sampleCount,
-                        startTime: startTime
-                    ) { fraction, stage in
-                        continuation.yield(RoFormerProgress(
-                            fraction: fraction,
-                            stage: stage,
-                            elapsedSeconds: CFAbsoluteTimeGetCurrent() - startTime
-                        ))
-                    }
-
-                    try self.checkCancelled()
-
-                    // Write output
-                    _ = try self.writeOutput(
-                        stems: separated,
-                        original: audio,
-                        to: outputURL,
-                        sampleRate: self.config.sampleRate,
-                        durationSeconds: durationSeconds,
-                        startTime: startTime
-                    )
-
-                    continuation.yield(RoFormerProgress(
-                        fraction: 1.0,
-                        stage: .writing,
-                        elapsedSeconds: CFAbsoluteTimeGetCurrent() - startTime
-                    ))
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { @Sendable _ in
-                self.cancel()
-            }
-        }
-    }
-
-    // MARK: - Public API: Delegate (Fire-and-Forget)
-
-    /// Separate vocals using delegate-based progress reporting.
-    ///
-    /// Returns immediately. Progress and completion are reported via ``delegate``.
-    ///
-    /// - Parameters:
-    ///   - inputURL: Path to input audio file.
-    ///   - outputURL: Directory for output files.
-    public func separateVocals(from inputURL: URL, to outputURL: URL) {
-        Task.detached {
-            do {
-                self.cancelFlag.withLock { $0 = false }
-                let startTime = CFAbsoluteTimeGetCurrent()
-
-                let (audio, sampleCount) = try self.loadAudio(from: inputURL)
-                let durationSeconds = Double(sampleCount) / self.config.sampleRate
-
-                await MainActor.run {
-                    self.delegate?.roFormer(self, didUpdateProgress: 0.05, stage: .loading)
-                }
-
-                try self.checkCancelled()
-
-                let separated = try await self.separateChunked(
-                    audio,
-                    sampleCount: sampleCount,
-                    startTime: startTime
-                ) { fraction, stage in
-                    Task { @MainActor in
-                        self.delegate?.roFormer(self, didUpdateProgress: fraction, stage: stage)
-                    }
-                }
-
-                try self.checkCancelled()
-
-                let result = try self.writeOutput(
-                    stems: separated,
-                    original: audio,
-                    to: outputURL,
-                    sampleRate: self.config.sampleRate,
-                    durationSeconds: durationSeconds,
-                    startTime: startTime
-                )
-
-                await MainActor.run {
-                    self.delegate?.roFormer(self, didCompleteWithResult: .success(result))
-                }
-            } catch let error as RoFormerError {
-                await MainActor.run {
-                    self.delegate?.roFormer(self, didCompleteWithResult: .failure(error))
-                }
-            } catch {
-                await MainActor.run {
-                    self.delegate?.roFormer(
-                        self,
-                        didCompleteWithResult: .failure(.mlxInferenceFailed(error))
-                    )
-                }
-            }
-        }
     }
 
     // MARK: - Public API: Raw Samples
@@ -584,66 +306,6 @@ public final class RoFormerSeparator: @unchecked Sendable {
     }
 
     // MARK: - Private: Helpers
-
-    private func loadAudio(from url: URL) throws -> (MLXArray, Int) {
-        do {
-            return try audioIO.loadAudio(from: url)
-        } catch {
-            throw RoFormerError.audioReadFailed(error)
-        }
-    }
-
-    /// Index of `lane` in this checkpoint's output, or nil when it does not
-    /// emit that lane at all.
-    private func stemIndex(_ lane: StemLane) -> Int? {
-        config.stemOrder.firstIndex(of: lane)
-    }
-
-    private func writeOutput(
-        stems: MLXArray,
-        original: MLXArray,
-        to outputDirectory: URL,
-        sampleRate: Double,
-        durationSeconds: Double,
-        startTime: CFAbsoluteTime
-    ) throws -> StemResult {
-        // Create output directory if needed
-        try FileManager.default.createDirectory(
-            at: outputDirectory,
-            withIntermediateDirectories: true
-        )
-
-        let vocalsURL = outputDirectory.appendingPathComponent("vocals.wav")
-        let accompanimentURL = outputDirectory.appendingPathComponent("accompaniment.wav")
-
-        // `stems` is [1, stems, 2, N]. This entry point is the file-in /
-        // file-out convenience and has only ever promised vocals and their
-        // residual, so a multi-stem checkpoint is read for its vocal lane
-        // here; `StemSeparator` is where every lane comes out.
-        let vocals = stems[0..., stemIndex(.vocals) ?? 0]
-
-        do {
-            // Write vocals
-            try audioIO.saveAudio(vocals, to: vocalsURL, sampleRate: sampleRate)
-
-            // Write accompaniment (original minus vocals)
-            let accompaniment = original - vocals
-            MLX.eval(accompaniment)
-            try audioIO.saveAudio(accompaniment, to: accompanimentURL, sampleRate: sampleRate)
-        } catch {
-            throw RoFormerError.outputWriteFailed(error)
-        }
-
-        let inferenceTimeMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0
-
-        return StemResult(
-            vocalsURL: vocalsURL,
-            accompanimentURL: accompanimentURL,
-            sampleRate: sampleRate,
-            durationSeconds: durationSeconds,
-            inferenceTimeMs: inferenceTimeMs
-        )
-    }
 
     /// Check if cancellation has been requested — either lane.
     ///

@@ -1680,16 +1680,6 @@ enum TransitionPlanner {
 
     // MARK: - Key gate
 
-    /// Both keys confident and ≥ `clashKeyDistance` apart on the circle of
-    /// fifths. Minors fold to their relative major first, so Am → C is
-    /// distance 0 (Camelot-style adjacency).
-    private static func keysClash(
-        _ a: TrackAnalysis, _ b: TrackAnalysis, _ config: Config
-    ) -> Bool {
-        guard let distance = keyDistance(a, b, config: config) else { return false }
-        return distance >= config.clashKeyDistance
-    }
-
     /// Circle-of-fifths distance between two confident keys; nil when either
     /// key is missing or below the confidence gate. Exposed so `audition` can
     /// print the number the decision actually turned on.

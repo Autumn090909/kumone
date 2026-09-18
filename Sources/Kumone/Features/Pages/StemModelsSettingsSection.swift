@@ -33,7 +33,7 @@ struct StemModelsSettingsSection: View {
                 Text("\(spec.sizeLabel) · \(statusText(spec, state))")
                     .font(.caption)
                     .foregroundStyle(state.isFailure ? Color.red : Color.secondary)
-                if case .downloading(let progress, _) = state {
+                if case .downloading(let progress) = state {
                     ProgressView(value: progress)
                         .progressViewStyle(.linear)
                         .frame(maxWidth: 200)
@@ -67,7 +67,7 @@ struct StemModelsSettingsSection: View {
         switch state {
         case .notInstalled:
             return String(localized: "未下载")
-        case .downloading(let progress, _):
+        case .downloading(let progress):
             return String(localized: "下载中 \(Int(progress * 100))%")
         case .verifying:
             return String(localized: "校验中…")

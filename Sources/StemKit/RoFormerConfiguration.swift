@@ -116,9 +116,6 @@ public struct RoFormerConfiguration: Sendable {
     /// Hop length between STFT frames.
     public var hopLength: Int = 441
 
-    /// Window length for STFT.
-    public var winLength: Int = 2048
-
     /// Sample rate in Hz.
     public var sampleRate: Double = 44100.0
 

@@ -170,9 +170,6 @@ public struct PlanTrace: Sendable {
            blocker == nil { blocker = gate }
     }
 
-    /// Whether every gate outside the bar-upgrade search was cleared.
-    public var clearedEveryGate: Bool { blocker == nil }
-
     /// The gate the shadow ledger says would have stopped this pair anyway,
     /// had the tier let it through. Nil when the shadow chain is clean (or
     /// was never run, i.e. the pair reached the beat-match rule for real).

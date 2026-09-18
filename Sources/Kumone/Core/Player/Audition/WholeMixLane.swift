@@ -68,7 +68,7 @@ struct WholeMixLane: Sendable, Equatable {
         return Self.linear(last.gainDB)
     }
 
-    static func linear(_ db: Float) -> Float { db == 0 ? 1 : pow(10, db / 20) }
+    static func linear(_ db: Float) -> Float { LoudnessCompensation.linearGain(db) }
 
     /// Raised cosine in amplitude between two breakpoints.
     static func interpolate(_ a: Point, _ b: Point, at t: TimeInterval) -> Float {

@@ -66,7 +66,7 @@ struct ProgressiveLoaderFLACTests {
             box.o.buffers += 1
             box.o.decodedFrames += AVAudioFramePosition(buf.frameLength)
         }
-        loader.onCompleted = { _ in
+        loader.onCompleted = {
             box.o.completed = true
             done.signal()
         }
@@ -117,7 +117,7 @@ struct ProgressiveLoaderFLACTests {
             box.mirrorBytes = bytes
             mirrored.signal()
         }
-        loader.onCompleted = { _ in
+        loader.onCompleted = {
             if box.mirrorBytes == nil { box.completedBeforeMirror = true }
             box.completed = true
         }

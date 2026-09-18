@@ -518,6 +518,5 @@ enum StructureSegmenter {
         return out.count >= 3 ? out : []
     }
 
-    private static func clamp01(_ v: Double) -> Double { min(1, max(0, v)) }
 }
 #endif

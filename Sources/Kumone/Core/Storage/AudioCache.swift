@@ -4,9 +4,9 @@ import Foundation
 /// Disk cache for full song audio, with LRU eviction by file mtime and
 /// in-flight download coalescing. See docs/automix-spec.md §3.
 ///
-/// Track analyses used to live here as sidecars; they now belong to
-/// `AnalysisStore`, which is outside the cache precisely so that evicting or
-/// clearing audio does not throw away the expensive part.
+/// Track analyses belong to `AnalysisStore`, which lives outside this cache
+/// precisely so that evicting or clearing audio does not throw away the
+/// expensive part.
 actor AudioCache {
     static let shared = AudioCache()
 
@@ -17,8 +17,6 @@ actor AudioCache {
         let fileExtension: String  // "mp3"/"flac"/"m4a", inferred by the caller
     }
 
-    private static let limitDefaultsKey = "settings.audioCacheLimit"
-    private static let defaultLimitBytes: Int64 = 2_147_483_648  // 2 GB
     private static let partSuffix = ".part"
     /// Timed lyrics, written by `LyricsSidecar` for the hand-over picker. It
     /// *replaces* the audio extension (the `.lrc` convention
@@ -30,13 +28,12 @@ actor AudioCache {
     private(set) var limitBytes: Int64
 
     private init() {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        directory = caches.appendingPathComponent("Kumone/Audio", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        if UserDefaults.standard.object(forKey: Self.limitDefaultsKey) != nil {
-            limitBytes = Int64(UserDefaults.standard.integer(forKey: Self.limitDefaultsKey))
+        directory = KumoneDirectories.caches("Audio")
+        if UserDefaults.standard.object(forKey: SettingsManager.Keys.audioCacheLimit) != nil {
+            limitBytes = Int64(UserDefaults.standard
+                .integer(forKey: SettingsManager.Keys.audioCacheLimit))
         } else {
-            limitBytes = Self.defaultLimitBytes
+            limitBytes = SettingsManager.defaultAudioCacheLimit
         }
     }
 
@@ -116,7 +113,7 @@ actor AudioCache {
     /// 0 means unlimited. Shrinking the limit evicts immediately.
     func setLimitBytes(_ bytes: Int64) {
         limitBytes = max(0, bytes)
-        UserDefaults.standard.set(limitBytes, forKey: Self.limitDefaultsKey)
+        UserDefaults.standard.set(limitBytes, forKey: SettingsManager.Keys.audioCacheLimit)
         evictIfNeeded(sparing: nil)
     }
 

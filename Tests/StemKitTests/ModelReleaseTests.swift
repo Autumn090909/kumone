@@ -97,14 +97,10 @@ struct ModelReleaseTests {
     }
 
     /// A file already sitting in the models directory that hashes wrong is not
-    /// quietly used: `ensureAvailableFromRelease` deletes it and tries again —
-    /// which, with an unreachable host, must surface as a failure rather than
-    /// as a silently kept bad file.
+    /// quietly used: `ensureAvailable` deletes it and tries again — which, with
+    /// an unreachable host, must surface as a failure rather than as a
+    /// silently kept bad file.
     @Test func aBadInstalledFileIsRemovedRatherThanUsed() async throws {
-        let base = ModelStore.releaseBase
-        defer { ModelStore.releaseBase = base }
-        ModelStore.releaseBase = URL(string: "https://127.0.0.1:1/none")!
-
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("stemkit-release-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -112,7 +108,7 @@ struct ModelReleaseTests {
 
         let descriptor = ModelDescriptor(
             fileName: "fake.safetensors",
-            url: URL(string: "https://example.invalid/fake.safetensors")!,
+            url: URL(string: "https://127.0.0.1:1/fake.safetensors")!,
             sha256: String(repeating: "0", count: 64),
             byteCount: 8192,
             configuration: .zfturboVocalsV1)
@@ -121,7 +117,7 @@ struct ModelReleaseTests {
 
         let store = ModelStore(directory: directory)
         await #expect(throws: (any Error).self) {
-            _ = try await store.ensureAvailableFromRelease(descriptor)
+            _ = try await store.ensureAvailable(descriptor)
         }
         #expect(!FileManager.default.fileExists(atPath: installed.path))
     }

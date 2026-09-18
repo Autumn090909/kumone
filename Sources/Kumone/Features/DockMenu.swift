@@ -113,16 +113,6 @@ final class DockMenu: NSObject, NSMenuDelegate {
     }
 }
 
-private extension QueueOrder {
-    var menuTitle: String {
-        switch self {
-        case .listed: return String(localized: "列表顺序")
-        case .shuffled: return String(localized: "随机播放")
-        case .autoMix: return String(localized: "AutoMix 顺序")
-        }
-    }
-}
-
 private extension RepeatMode {
     var menuTitle: String {
         switch self {

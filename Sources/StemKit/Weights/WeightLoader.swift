@@ -118,19 +118,4 @@ public struct WeightLoader {
             throw WeightLoadingError.loadFailed(error.localizedDescription)
         }
     }
-
-    /// Validate that the weights directory contains the expected files.
-    ///
-    /// - Parameter directory: Path to the weights directory.
-    /// - Throws: `WeightLoadingError` if required files are missing.
-    public static func validateWeightsDirectory(_ directory: URL) throws {
-        guard FileManager.default.fileExists(atPath: directory.path) else {
-            throw WeightLoadingError.weightsDirectoryNotFound(directory.path)
-        }
-
-        let filePath = directory.appendingPathComponent(vocalsWeightsFile).path
-        guard FileManager.default.fileExists(atPath: filePath) else {
-            throw WeightLoadingError.weightsFileNotFound(filePath)
-        }
-    }
 }

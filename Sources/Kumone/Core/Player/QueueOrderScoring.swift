@@ -414,7 +414,7 @@ enum QueueOrderScorer {
         }
         guard seams > 0 else { return 0 }
         let top = TransitionTier.rampedBeatMatched.rawValue
-        return clamp01(Double(tierSum) / Double(seams * top))
+        return clampedScore(Double(tierSum) / Double(seams * top))
     }
 
     /// Fold the future term into an already-ranked candidate list, in place.
@@ -486,7 +486,7 @@ enum QueueOrderScorer {
               a.bpm > 0, b.bpm > 0 else { return 0.5 }
         let ratio = [0.5, 1.0, 2.0].map { abs(b.bpm * $0 - a.bpm) / a.bpm }.min()!
         guard config.tempoFullScale > 0 else { return ratio == 0 ? 1 : 0 }
-        return clamp01(1 - ratio / config.tempoFullScale)
+        return clampedScore(1 - ratio / config.tempoFullScale)
     }
 
     /// 1 for the same key, 0 for the tritone, interpolated toward 0.5 by the
@@ -499,8 +499,8 @@ enum QueueOrderScorer {
         guard let distance = TransitionPlanner.keyDistance(a, b, config: plannerConfig)
         else { return 0.5 }
         // The circle of fifths' farthest point is 6 steps away.
-        let affinity = clamp01(1 - Double(distance) / 6)
-        let confidence = clamp01(Swift.min(a.keyConfidence, b.keyConfidence))
+        let affinity = clampedScore(1 - Double(distance) / 6)
+        let confidence = clampedScore(Swift.min(a.keyConfidence, b.keyConfidence))
         return 0.5 + (affinity - 0.5) * confidence
     }
 
@@ -518,7 +518,7 @@ enum QueueOrderScorer {
         }
         guard nx > 1e-12, ny > 1e-12 else { return 0.5 }
         let cosine = dot / (nx.squareRoot() * ny.squareRoot())
-        return clamp01((cosine + 1) / 2)
+        return clampedScore((cosine + 1) / 2)
     }
 
     /// How level the seam is: the outgoing track's energy where it leaves
@@ -532,7 +532,7 @@ enum QueueOrderScorer {
         let delta = into - out
         let charged = delta < 0 ? -delta : delta * config.energyRiseLeniency
         guard config.energyFullScale > 0 else { return charged == 0 ? 1 : 0 }
-        return clamp01(1 - charged / config.energyFullScale)
+        return clampedScore(1 - charged / config.energyFullScale)
     }
 
     /// Energy in the last stretch the outgoing track is still playing at
@@ -569,9 +569,11 @@ enum QueueOrderScorer {
         return mean / Double(peak)
     }
 
-    private static func clamp01(_ v: Double) -> Double {
-        guard v.isFinite else { return 0.5 }
-        return Swift.min(1, Swift.max(0, v))
+    /// `clamp01`, except that a non-finite component lands at 0.5 rather than
+    /// at 0: a measurement that could not be taken must neither reward nor
+    /// punish the pair, and 0 is a verdict.
+    private static func clampedScore(_ v: Double) -> Double {
+        v.isFinite ? clamp01(v) : 0.5
     }
 }
 

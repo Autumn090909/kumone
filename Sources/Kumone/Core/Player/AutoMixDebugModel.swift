@@ -603,9 +603,6 @@ final class AutoMixDebugModel: ObservableObject {
         publish()
     }
 
-    /// Test hook: the queue-order group as recorded, without opening a window.
-    var currentOrderForTesting: AutoMixDebugOrder { live.order }
-
     func setOrder(_ order: AutoMixDebugOrder) {
         guard live.order != order else { return }
         live.order = order
@@ -641,9 +638,6 @@ final class AutoMixDebugModel: ObservableObject {
         live.plan = plan
         publish()
     }
-
-    /// Test hook: the score verdict as recorded, without opening a window.
-    var currentScoreRefusalForTesting: String? { live.scoreRefusal }
 
     /// The arm-time score verdict. `nil` is "the score compiled", or "there was
     /// no score" — both of which the row prints from the plan instead.

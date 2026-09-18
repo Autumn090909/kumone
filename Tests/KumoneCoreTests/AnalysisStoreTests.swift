@@ -4,8 +4,8 @@ import Foundation
 
 // `AnalysisStore` — the analysis's own home, outside the audio LRU cache.
 //
-// The whole point of the type is two invariants the old sidecars could not
-// hold, so both get a test of their own:
+// The whole point of the type is two invariants, so both get a test of their
+// own:
 //
 //   - **a lookup is by track ID, never by quality level**. A track analyzed at
 //     the scoring level and later played at `hires` must hit, or the app pays
@@ -14,8 +14,7 @@ import Foundation
 //     playback-quality one must not overwrite it, whichever order they land in.
 //
 // Every case runs against a temporary directory; the real
-// `~/Library/Application Support/Kumone/Analysis` (and the real audio cache
-// the migration reads) are never touched.
+// `~/Library/Application Support/Kumone/Analysis` is never touched.
 
 @Suite struct AnalysisStoreTests {
 
@@ -35,33 +34,20 @@ import Foundation
             referenceLoudness: -12, peakDBFS: -6)
     }
 
-    /// A store over a fresh temporary directory, plus the (empty) fake audio
-    /// cache directory the migration reads.
-    private func makeStore(withAudioDirectory: Bool = true)
-        -> (store: AnalysisStore, root: URL, audio: URL) {
+    /// A store over a fresh temporary directory.
+    private func makeStore() -> (store: AnalysisStore, root: URL) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AnalysisStoreTests-\(UUID().uuidString)", isDirectory: true)
-        let analysis = root.appendingPathComponent("Analysis", isDirectory: true)
-        let audio = root.appendingPathComponent("Audio", isDirectory: true)
-        try? FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
-        return (AnalysisStore(directory: analysis,
-                              audioDirectory: withAudioDirectory ? audio : nil),
-                root, audio)
-    }
-
-    private func writeSidecar(_ analysis: TrackAnalysis, trackID: Int, level: String,
-                              source: String = "netease", ext: String = "mp3",
-                              in audio: URL) throws {
-        let name = "\(trackID)-\(level)-\(source).\(ext).analysis.json"
-        try JSONEncoder().encode(analysis)
-            .write(to: audio.appendingPathComponent(name))
+        return (AnalysisStore(directory: root.appendingPathComponent("Analysis",
+                                                                    isDirectory: true)),
+                root)
     }
 
     // MARK: - Store and load
 
     @Test("an analysis stored at one level is found by track ID at any other")
     func storeAndLoadIgnoresLevel() async throws {
-        let (store, root, _) = makeStore()
+        let (store, root) = makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
         await store.storeAnalysis(makeAnalysis(bpm: 128), forTrackID: 42,
@@ -82,7 +68,7 @@ import Foundation
 
     @Test("a record from an older analyzer version is a miss, not a stale hit")
     func versionMismatchMisses() async throws {
-        let (store, root, _) = makeStore()
+        let (store, root) = makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
         await store.storeAnalysis(makeAnalysis(version: TrackAnalysis.currentVersion - 1),
@@ -102,7 +88,7 @@ import Foundation
 
     @Test("better audio wins whichever order the two analyses arrive in")
     func qualityPrecedence() async throws {
-        let (store, root, _) = makeStore()
+        let (store, root) = makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
         // Upgrade: a playback-quality analysis replaces the scoring one.
@@ -131,66 +117,11 @@ import Foundation
         #expect(await store.loadAnalysis(forTrackID: 1)?.bpm == 175)
     }
 
-    // MARK: - Migration
-
-    @Test("legacy sidecars are imported once, best level wins, and are deleted")
-    func migratesSidecarsFromTheAudioCache() async throws {
-        let (store, root, audio) = makeStore()
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        try writeSidecar(makeAnalysis(bpm: 100), trackID: 5, level: "standard", in: audio)
-        try writeSidecar(makeAnalysis(bpm: 140), trackID: 5, level: "exhigh",
-                         ext: "flac", in: audio)
-        try writeSidecar(makeAnalysis(bpm: 111), trackID: 6, level: "standard",
-                         source: "unblock_kuwo", in: audio)
-        try writeSidecar(makeAnalysis(version: TrackAnalysis.currentVersion - 1),
-                         trackID: 8, level: "exhigh", in: audio)
-        // Not a sidecar: the audio itself must survive the walk untouched.
-        let audioFile = audio.appendingPathComponent("5-exhigh-netease.flac")
-        try Data([0x00]).write(to: audioFile)
-
-        #expect(await store.loadAnalysis(forTrackID: 5)?.bpm == 140)
-        #expect(await store.loadAnalysis(forTrackID: 6)?.bpm == 111)
-        #expect(await store.loadAnalysis(forTrackID: 8) == nil)
-        #expect(FileManager.default.fileExists(atPath: audioFile.path))
-
-        let leftovers = try FileManager.default
-            .contentsOfDirectory(atPath: audio.path)
-            .filter { $0.hasSuffix(".analysis.json") }
-        #expect(leftovers.isEmpty)
-
-        // The import respects precedence like any other write: a sidecar
-        // reappearing at a worse level (a second machine, a restored backup)
-        // cannot demote what is already stored.
-        try writeSidecar(makeAnalysis(bpm: 60), trackID: 5, level: "standard", in: audio)
-        let second = AnalysisStore(directory: root.appendingPathComponent("Analysis"),
-                                   audioDirectory: audio)
-        #expect(await second.loadAnalysis(forTrackID: 5)?.bpm == 140)
-    }
-
-    @Test("the migration is one-shot: a later sidecar is not re-imported")
-    func migrationRunsOnce() async throws {
-        let (store, root, audio) = makeStore()
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        _ = await store.loadAnalysis(forTrackID: 1)  // marks the import done
-        try writeSidecar(makeAnalysis(bpm: 128), trackID: 1, level: "exhigh", in: audio)
-
-        #expect(await store.loadAnalysis(forTrackID: 1) == nil)
-        // A fresh store over the same directory finds the marker and leaves
-        // the file alone, so the walk really is paid for once.
-        let second = AnalysisStore(directory: root.appendingPathComponent("Analysis"),
-                                   audioDirectory: audio)
-        #expect(await second.loadAnalysis(forTrackID: 1) == nil)
-        #expect(try FileManager.default.contentsOfDirectory(atPath: audio.path)
-                    .contains { $0.hasSuffix(".analysis.json") })
-    }
-
     // MARK: - Clearing
 
     @Test("clear() empties the store and survives being used afterwards")
     func clearEmptiesTheStore() async throws {
-        let (store, root, _) = makeStore(withAudioDirectory: false)
+        let (store, root) = makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
         await store.storeAnalysis(makeAnalysis(), forTrackID: 3,

@@ -91,7 +91,10 @@ public enum NowPlayingMode: String, CaseIterable, Identifiable {
 final class SettingsManager: ObservableObject {
     static let shared = SettingsManager()
 
-    private enum Keys {
+    /// Internal rather than private: `AudioCache` reads its own limit straight
+    /// from `UserDefaults` before any settings object exists, and must spell
+    /// the key the same way.
+    enum Keys {
         static let quality = "settings.audioQuality"
         static let appearance = "settings.appearance"
         static let nowPlayingMode = "settings.nowPlayingMode"
@@ -236,6 +239,12 @@ final class SettingsManager: ObservableObject {
 
     static let mainWindowAmbientBackgroundIntensityRange = 0.5...1.5
 
+    #if os(macOS)
+    /// Default song-cache ceiling, shared with `AudioCache` so the two cannot
+    /// disagree about what "unset" means.
+    nonisolated static let defaultAudioCacheLimit: Int64 = 2_147_483_648  // 2 GB
+    #endif
+
     /// Artwork-tinted overlay on the main app interface.
     @Published var showMainWindowAmbientBackground: Bool {
         didSet {
@@ -276,7 +285,8 @@ final class SettingsManager: ObservableObject {
         automixStemsEnabled = defaults.object(forKey: Keys.automixStems) as? Bool ?? false
         loudnessCompensationEnabled =
             defaults.object(forKey: Keys.loudnessCompensation) as? Bool ?? true
-        audioCacheLimit = (defaults.object(forKey: Keys.audioCacheLimit) as? Int64) ?? 2_147_483_648
+        audioCacheLimit = (defaults.object(forKey: Keys.audioCacheLimit) as? Int64)
+            ?? Self.defaultAudioCacheLimit
         outputDeviceUID = defaults.string(forKey: Keys.outputDevice) ?? ""
         #endif
         desktopLyricsCentered = defaults.object(forKey: Keys.desktopLyricsCentered) as? Bool ?? false

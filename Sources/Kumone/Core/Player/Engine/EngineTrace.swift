@@ -262,8 +262,7 @@ enum EngineTrace {
     static let keepFiles = 40
 
     static var directory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kumone/seamtraces", isDirectory: true)
+        KumoneDirectories.applicationSupport("seamtraces")
     }
 
     /// `+12.3456 a  fader    overlapAutomation  req=0.7500 level=0.6120 gain=0.8160`
@@ -364,7 +363,10 @@ enum EngineTrace {
         return url.lastPathComponent
     }
 
-    private static func prune(_ dir: URL) {
+    /// Keep the newest `keeping` files in `dir` by modification date and drop
+    /// the rest. Shared with the engine's tap captures, which keep a different
+    /// number of a different kind of specimen.
+    static func prune(_ dir: URL, keeping: Int = keepFiles) {
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
         let sorted = files.sorted {
@@ -374,7 +376,7 @@ enum EngineTrace {
                 .contentModificationDate) ?? .distantPast
             return a > b
         }
-        for stale in sorted.dropFirst(keepFiles) {
+        for stale in sorted.dropFirst(keeping) {
             try? FileManager.default.removeItem(at: stale)
         }
     }

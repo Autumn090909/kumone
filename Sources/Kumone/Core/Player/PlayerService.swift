@@ -176,10 +176,18 @@ final class PlayerService: ObservableObject {
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
+    private var itemStatusObservation: NSKeyValueObservation?
     private var resolveGeneration = 0
     private var consecutiveFailures = 0
+    private var attemptedUnblockSources: Set<AudioSourceID> = []
+    private var currentUnblockSourceID: AudioSourceID?
     private var scrobbled = false
     private var startScrobbled = false
+
+    private enum ResolvedURLLoadResult {
+        case loaded
+        case superseded
+    }
 
     private init() {
         engine.actionAtItemEnd = .pause
@@ -575,6 +583,10 @@ final class PlayerService: ObservableObject {
         duration = track.duration
         servedQuality = nil
         unblockSource = nil
+        currentUnblockSourceID = nil
+        attemptedUnblockSources.removeAll()
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
         isTrial = false
         lyrics = nil
         scrobbled = false
@@ -613,42 +625,89 @@ final class PlayerService: ObservableObject {
         }
 
         // NetEase refused — try third-party sources (UnblockNeteaseMusic-style).
-        if resolvedURL == nil || data?.freeTrialInfo != nil, SettingsManager.shared.enableUnblock {
-            if let unblocked = await UnblockService.resolve(track) {
-                guard generation == resolveGeneration else { return }
-                resolvedURL = unblocked.url
-                unblockSource = unblocked.source
-                data = nil
-                ToastCenter.shared.show(String(localized: "已使用第三方音源：\(unblocked.source)"))
-            }
+        if resolvedURL == nil || data?.freeTrialInfo != nil,
+           SettingsManager.shared.canResolveUnblockedTracks {
+            if await resolveAndLoadUnblocked(track, generation: generation) { return }
         }
         guard generation == resolveGeneration else { return }
 
         guard let url = resolvedURL else {
-            consecutiveFailures += 1
-            let reason = track.playability(privilege: nil,
-                                           isLoggedIn: AccountStore.shared.isLoggedIn,
-                                           vipType: AccountStore.shared.vipType).reason
-            ToastCenter.shared.show(String(localized: "《\(track.name)》无法播放\(reason.map { "：\($0)" } ?? "")"))
-            guard isPlaying else {
-                engine.replaceCurrentItem(with: nil)
-                return
-            }
-            if consecutiveFailures < 5 {
-                advanceToNext(userInitiated: false)
-            } else {
-                isPlaying = false
-            }
+            handleUnplayable(track)
             return
         }
 
-        consecutiveFailures = 0
         servedQuality = data?.level
         if data?.freeTrialInfo != nil {
             isTrial = true
             ToastCenter.shared.show(String(localized: "VIP 歌曲，当前为试听片段"))
         }
+        _ = await loadResolvedURL(track, url: url, durationMS: data?.time, generation: generation)
+    }
 
+    private func resolveAndLoadUnblocked(
+        _ track: Track,
+        generation: Int,
+        requiresActivePlayback: Bool = false
+    ) async -> Bool {
+        let enabledSources = SettingsManager.shared.enabledAudioSourceIDs
+        guard !enabledSources.isEmpty else { return false }
+
+        guard generation == resolveGeneration,
+              !requiresActivePlayback || isPlaying
+        else { return false }
+
+        let resolution = await UnblockService.resolve(
+            track,
+            enabledSources: enabledSources,
+            excluding: attemptedUnblockSources
+        )
+        attemptedUnblockSources.formUnion(resolution.attemptedSources)
+        guard let unblocked = resolution.source else { return false }
+        guard generation == resolveGeneration,
+              !requiresActivePlayback || isPlaying
+        else { return false }
+
+        currentUnblockSourceID = unblocked.id
+        unblockSource = unblocked.displayName
+        servedQuality = nil
+        isTrial = false
+
+        let loadResult = await loadResolvedURL(
+            track,
+            url: unblocked.url,
+            durationMS: nil,
+            generation: generation
+        )
+        guard case .loaded = loadResult else { return false }
+
+        ToastCenter.shared.show(String(localized: "已使用第三方音源：\(unblocked.displayName)"))
+        return true
+    }
+
+    private func handleUnplayable(_ track: Track) {
+        consecutiveFailures += 1
+        let reason = track.playability(privilege: nil,
+                                       isLoggedIn: AccountStore.shared.isLoggedIn,
+                                       vipType: AccountStore.shared.vipType).reason
+        ToastCenter.shared.show(String(localized: "《\(track.name)》无法播放\(reason.map { "：\($0)" } ?? "")"))
+        guard isPlaying else {
+            engine.replaceCurrentItem(with: nil)
+            return
+        }
+        if consecutiveFailures < 5 {
+            advanceToNext(userInitiated: false)
+        } else {
+            isPlaying = false
+        }
+    }
+
+    private func loadResolvedURL(
+        _ track: Track,
+        url: URL,
+        durationMS: Int?,
+        generation: Int
+    ) async -> ResolvedURLLoadResult {
+        consecutiveFailures = 0
         // Resolve the asset's audio track before the item goes live: an audio mix
         // attached after playback starts is silently ignored, so the spectrum tap
         // has to be spliced in here or not at all. Sources that refuse byte-range
@@ -656,13 +715,24 @@ final class PlayerService: ObservableObject {
         // back to its decorative animation.
         let asset = AVURLAsset(url: url)
         let assetTrack = await loadAudioTrack(from: asset, timeout: 2)
-        guard generation == resolveGeneration else { return }
+        guard generation == resolveGeneration else { return .superseded }
 
         let item = AVPlayerItem(asset: asset)
         if let assetTrack, let mix = AudioSpectrum.shared.makeAudioMix(for: assetTrack) {
             item.audioMix = mix
         } else {
             AudioSpectrum.shared.markUntappable()
+        }
+
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
+        if let sourceID = currentUnblockSourceID {
+            itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+                guard item.status == .failed else { return }
+                Task { @MainActor in
+                    self?.handleUnblockItemFailure(track: track, generation: generation, sourceID: sourceID)
+                }
+            }
         }
 
         if let old = endObserver {
@@ -681,9 +751,46 @@ final class PlayerService: ObservableObject {
             scrobbleStartIfNeeded()
         }
 
-        if let time = data?.time, time > 0 {
-            duration = TimeInterval(time) / 1000
+        if let durationMS, durationMS > 0 {
+            duration = TimeInterval(durationMS) / 1000
             NowPlayingManager.shared.updateMetadata(for: track, duration: duration)
+        }
+        return .loaded
+    }
+
+    private func handleUnblockItemFailure(
+        track: Track,
+        generation: Int,
+        sourceID: AudioSourceID
+    ) {
+        guard generation == resolveGeneration,
+              currentTrack?.id == track.id,
+              currentUnblockSourceID == sourceID
+        else { return }
+
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
+        currentUnblockSourceID = nil
+        unblockSource = nil
+        engine.replaceCurrentItem(with: nil)
+        AudioSpectrum.shared.beginPreparing()
+
+        guard isPlaying else {
+            return
+        }
+
+        Task {
+            let loaded = await resolveAndLoadUnblocked(
+                track,
+                generation: generation,
+                requiresActivePlayback: true
+            )
+            guard isPlaying else { return }
+            guard loaded else {
+                guard generation == resolveGeneration else { return }
+                handleUnplayable(track)
+                return
+            }
         }
     }
 

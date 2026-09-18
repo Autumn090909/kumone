@@ -208,7 +208,7 @@
 "高解析" = "Hi-Res";
 "无损与 Hi-Res 需要黑胶 VIP，未开通时自动回落到可用音质" = "Lossless and Hi-Res require VIP; falls back automatically otherwise";
 "灰色歌曲解锁" = "Unblock Gray Tracks";
-"无版权 / 下架歌曲自动从第三方音源（酷我、酷狗等）匹配播放" = "Unavailable tracks are matched from third-party sources (Kuwo, Kugou, etc.)";
+"无版权或下架歌曲将从已启用音源中匹配播放" = "Unavailable tracks are matched from enabled sources";
 "外观" = "Appearance";
 "主题" = "Theme";
 "跟随系统" = "System";

@@ -383,20 +383,43 @@ private final class EventLog: @unchecked Sendable {
 
 // MARK: - Shared helpers
 
-/// Can AVAudioEngine reach an output device at all? (CI/headless machines may
-/// have none; those environments skip the playback assertions.)
+/// Can AVAudioEngine drive a real-time output device? Starting is not enough:
+/// GitHub's macOS runners expose an output that starts fine but whose clock
+/// never advances, so every playback test would sit out its watchdog. Require
+/// the output's sample time to cover at least half of a one-second wait;
+/// environments that fail skip the playback assertions.
 private let audioOutputAvailable: Bool = {
     let engine = AVAudioEngine()
     engine.mainMixerNode.outputVolume = 0
     engine.prepare()
     do {
         try engine.start()
-        engine.stop()
-        return true
     } catch {
         print("PlaybackEngineSmoke: no usable audio output (\(error)); playback tests will be skipped")
         return false
     }
+    defer { engine.stop() }
+
+    func renderedSampleTime() -> AVAudioTime? {
+        let deadline = Date().addingTimeInterval(1)
+        while Date() < deadline {
+            if let time = engine.outputNode.lastRenderTime, time.isSampleTimeValid { return time }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        return nil
+    }
+    guard let start = renderedSampleTime() else {
+        print("PlaybackEngineSmoke: output never rendered; playback tests will be skipped")
+        return false
+    }
+    Thread.sleep(forTimeInterval: 1)
+    guard let end = renderedSampleTime() else { return false }
+    let advanced = Double(end.sampleTime - start.sampleTime) / start.sampleRate
+    guard advanced >= 0.5 else {
+        print("PlaybackEngineSmoke: output clock advanced \(advanced)s in 1s; playback tests will be skipped")
+        return false
+    }
+    return true
 }()
 
 /// Poll `engine.position(of:)` until it exceeds `target` or `timeout` passes.

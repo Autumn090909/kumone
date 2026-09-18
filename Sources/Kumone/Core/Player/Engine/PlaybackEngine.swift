@@ -3,6 +3,7 @@ import Accelerate
 import AudioToolbox
 import AVFoundation
 import Foundation
+import os
 
 /// 引擎实际怎么把一次接歌放出来的。
 ///
@@ -126,6 +127,19 @@ final class PlaybackEngine: @unchecked Sendable {
         init(_ traceDeck: TraceDeck) { self.traceDeck = traceDeck }
 
         let player = AVAudioPlayerNode()
+        /// The fader, written through here so a render-side reader can see it
+        /// without asking the node: `AVAudioNode.volume`'s getter takes the
+        /// engine lock, which `AVAudioPlayerNode.stop()` holds while it waits
+        /// for pending tap callbacks — a tap that reads the node deadlocks
+        /// against a stop on the engine queue.
+        var fader: Float {
+            get { faderMirror.withLock { $0 } }
+            set {
+                player.volume = newValue
+                faderMirror.withLock { $0 = newValue }
+            }
+        }
+        private let faderMirror = OSAllocatedUnfairLock<Float>(initialState: 1)
         let timePitch = AVAudioUnitTimePitch()
         /// Band layout — fixed at init, see `EQBand`.
         let eq = AVAudioUnitEQ(numberOfBands: DeckChain.bandCount)
@@ -617,7 +631,7 @@ final class PlaybackEngine: @unchecked Sendable {
             connectChainLocked(state, format: graphFormat)
         }
         connectChainLocked(segmentState, format: graphFormat)
-        segmentState.player.volume = 0
+        segmentState.fader = 0
         connectMasterChainLocked()
 
         // Output device / route changes stop the engine and wipe every player
@@ -1349,7 +1363,6 @@ final class PlaybackEngine: @unchecked Sendable {
                                       _ block: (@Sendable (Float) -> Void)?) {
         state.delay.removeTap(onBus: 0)
         guard let block else { return }
-        let player = state.player
         state.delay.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in
             var peak: Float = 0
             if let data = buffer.floatChannelData {
@@ -1360,7 +1373,7 @@ final class PlaybackEngine: @unchecked Sendable {
                     }
                 }
             }
-            block(peak * player.volume)
+            block(peak * state.fader)
         }
     }
 
@@ -3330,7 +3343,7 @@ final class PlaybackEngine: @unchecked Sendable {
         if state.pendingFaderRestore != nil {
             state.pendingFaderRestore = level
         } else {
-            state.player.volume = level
+            state.fader = level
         }
     }
 
@@ -3340,7 +3353,7 @@ final class PlaybackEngine: @unchecked Sendable {
     private func hardSilenceFaderLocked(_ state: DeckState) {
         state.pendingFaderRestore = nil
         state.faderRequest = 0
-        state.player.volume = 0
+        state.fader = 0
         // From here the deck is out of service: the resurrection sentinel
         // watches for anything that raises it again before a legitimate re-cue.
         state.outOfService = true
@@ -3599,7 +3612,7 @@ final class PlaybackEngine: @unchecked Sendable {
         if state.pendingFaderRestore == nil {
             state.pendingFaderRestore = state.player.volume
         }
-        state.player.volume = 0
+        state.fader = 0
         startFaderFlushTimerLocked()
     }
 
@@ -3628,7 +3641,7 @@ final class PlaybackEngine: @unchecked Sendable {
             state.pendingFaderRestore = nil
             trace.record(.fader, state.traceDeck, .flushRestore,
                          Double(state.faderRequest), Double(target), played)
-            state.player.volume = target
+            state.fader = target
         }
         if !anyOpen {
             faderFlushTimer?.cancel()
@@ -4496,7 +4509,7 @@ final class PlaybackEngine: @unchecked Sendable {
                                            completionHandler: nil)
         // Silent until the head crossfade opens it: the segment's first half
         // second duplicates what the outgoing deck is already playing.
-        segmentState.player.volume = 0
+        segmentState.fader = 0
         segmentState.faderRequest = 0
         playOnHostClockLocked(segmentState, at: startTime, from: 0, .spliceArm)
         // The deck's own splice instant, without the compensation: the origin
@@ -4594,7 +4607,7 @@ final class PlaybackEngine: @unchecked Sendable {
 
     private func parkSegmentLocked() {
         segmentState.generation += 1
-        segmentState.player.volume = 0
+        segmentState.fader = 0
         segmentState.faderRequest = 0
         segmentState.player.stop()
     }
@@ -4666,7 +4679,7 @@ final class PlaybackEngine: @unchecked Sendable {
     /// audio), and it must never be caught by a deck's flush window.
     private func setSegmentFaderLocked(_ value: Float) {
         segmentState.faderRequest = value
-        segmentState.player.volume = value
+        segmentState.fader = value
     }
 
     /// The outgoing deck has been crossfaded away. Stopped and silenced, but

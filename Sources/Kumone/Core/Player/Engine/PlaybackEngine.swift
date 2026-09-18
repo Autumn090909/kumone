@@ -582,6 +582,12 @@ final class PlaybackEngine: @unchecked Sendable {
     /// Deck-level gain glide: the transition ride's release. Independent of
     /// the transition timer on purpose — the release outlives the transition.
     private var rideTimer: DispatchSourceTimer?
+    /// When the glide timer last fired: the glides advance by the time that
+    /// actually passed, not by the nominal tick, because a busy machine
+    /// coalesces and delays timer fires — counted in ticks, a release under
+    /// load ran ~30% slow (seen on CI) and kept the new track under its own
+    /// level for that much longer.
+    private var lastRideTickUptime: TimeInterval?
     private var configObserver: NSObjectProtocol?
     /// Set through `setOutputSampleSink`; kept so the tap can be put back after
     /// a configuration change rebuilds the graph.
@@ -3376,6 +3382,8 @@ final class PlaybackEngine: @unchecked Sendable {
     /// audibility, and the release can run for 13 s — this is not something to
     /// burn the 50 Hz ramp tick on.
     private static let rideTick: TimeInterval = 0.05
+    /// The most one glide step may cover; see `lastRideTickUptime`.
+    private static let rideTickMaxStep: TimeInterval = 0.25
 
     /// Put the deck's ride at `db` **now**, with no glide, and re-write the
     /// fader through it.
@@ -3530,6 +3538,7 @@ final class PlaybackEngine: @unchecked Sendable {
         timer.setEventHandler { [weak self] in self?.rideTickLocked() }
         timer.resume()
         rideTimer = timer
+        lastRideTickUptime = ProcessInfo.processInfo.systemUptime
     }
 
     /// One tick of the deck-level gain glides — the ride's release, and the
@@ -3540,6 +3549,11 @@ final class PlaybackEngine: @unchecked Sendable {
     /// rode the incoming level and padded it for the bend), which is exactly
     /// why they are separate numbers and one fader write.
     private func rideTickLocked() {
+        let now = ProcessInfo.processInfo.systemUptime
+        // Capped so a long stall of the engine queue resumes the glide rather
+        // than landing it in one audible jump; paused time is dropped below.
+        let dt = Swift.min(now - (lastRideTickUptime ?? now - Self.rideTick), Self.rideTickMaxStep)
+        lastRideTickUptime = now
         var anyGliding = false
         for state in deckStates.values {
             let ridingHome = abs(state.rideDB - state.rideTargetDB) > 0.0001
@@ -3553,7 +3567,7 @@ final class PlaybackEngine: @unchecked Sendable {
             anyGliding = true
             guard !isPaused else { continue }
             if ridingHome {
-                state.rideReleaseElapsed += Self.rideTick
+                state.rideReleaseElapsed += dt
                 let db = TransitionAutomation.rideDB(
                     state.rideReleaseFromDB, secondsAfterOverlap: state.rideReleaseElapsed)
                 state.rideDB = db
@@ -3577,7 +3591,7 @@ final class PlaybackEngine: @unchecked Sendable {
                 // A plain constant-slope walk towards the target, in dB. The
                 // pad has no "release from" bookkeeping because, unlike the
                 // ride, it is only ever released *to* unity.
-                let step = TransitionAutomation.ratePadGlideDBPerSecond * Self.rideTick
+                let step = TransitionAutomation.ratePadGlideDBPerSecond * dt
                 let remaining = state.ratePadTargetDB - state.ratePadDB
                 state.ratePadDB += remaining > 0
                     ? Swift.min(step, remaining) : Swift.max(-step, remaining)
@@ -3588,6 +3602,7 @@ final class PlaybackEngine: @unchecked Sendable {
         if !anyGliding {
             rideTimer?.cancel()
             rideTimer = nil
+            lastRideTickUptime = nil
         }
     }
 

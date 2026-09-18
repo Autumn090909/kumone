@@ -65,12 +65,19 @@ let package = Package(
             name: "KumoneCore",
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle", condition: .when(platforms: [.macOS])),
+                .target(name: "KumoneObjC", condition: .when(platforms: [.macOS])),
             ],
             path: "Sources/Kumone",
             exclude: ["Resources"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ]
+        ),
+        // Objective-C exception catching for the playback engine (macOS only):
+        // AVFAudio reports some failures as NSExceptions Swift cannot catch.
+        .target(
+            name: "KumoneObjC",
+            path: "Sources/KumoneObjC"
         ),
         .executableTarget(
             name: "KumoneLauncher",
@@ -128,7 +135,10 @@ let package = Package(
         ),
         .testTarget(
             name: "KumoneCoreTests",
-            dependencies: ["KumoneCore"],
+            dependencies: [
+                "KumoneCore",
+                .target(name: "KumoneObjC", condition: .when(platforms: [.macOS])),
+            ],
             path: "Tests/KumoneCoreTests",
             swiftSettings: [
                 .swiftLanguageMode(.v5),

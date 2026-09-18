@@ -3,6 +3,7 @@ import Accelerate
 import AudioToolbox
 import AVFoundation
 import Foundation
+import KumoneObjC
 import os
 
 /// 引擎实际怎么把一次接歌放出来的。
@@ -1851,7 +1852,17 @@ final class PlaybackEngine: @unchecked Sendable {
         // the one path that already stripped to host time (the rate-corrected
         // segment arm) measured 0.0 ms every time.
         let release = time.isHostTimeValid ? AVAudioTime(hostTime: time.hostTime) : time
-        state.player.play(at: release)
+        // See `startNodeIfNeededLocked` for the exception. A release on the
+        // host clock cannot be retried at the same instant, so fall back to a
+        // plain start: late beats a crash, and the start check journals it.
+        if let exception = KumoneCatchException({ state.player.play(at: release) }) {
+            PlaybackJournal.note("deck host-clock start raised deck=\(journalDeckName(state)) "
+                + "(\(exception.reason ?? exception.name.rawValue)); starting unscheduled")
+            state.hostScheduledStart = false
+            state.scheduledStartHostTime = nil
+            state.startCheck = nil
+            startNodeIfNeededLocked(state)
+        }
     }
 
     /// **Did the node start when we told it to?** — the measurement every
@@ -1933,27 +1944,25 @@ final class PlaybackEngine: @unchecked Sendable {
         guard !state.hostScheduledStart else { return }
         guard state.isPlaying, !isPaused, state.isConnected, engine.isRunning else { return }
         guard !state.player.isPlaying else { return }
-        // `isRunning` turns true before the output has rendered, and `play()`
-        // in that window raises "player did not see an IO cycle" — an
-        // NSException, so a crash (seen on CI with two engines starting at
-        // once; the same window follows every restart after a device switch).
-        // Wait for the first cycle; every guard above is re-checked on retry.
-        guard engine.outputNode.lastRenderTime?.isSampleTimeValid == true else {
-            if attempt < Self.firstIOCycleRetries {
-                queue.asyncAfter(deadline: .now() + Self.firstIOCycleRetryInterval) { [weak self] in
-                    self?.startNodeIfNeededLocked(state, attempt: attempt + 1)
-                }
-            } else {
-                PlaybackJournal.note("deck start withheld deck=\(journalDeckName(state)) "
-                    + "(output never completed an IO cycle)")
-            }
-            return
-        }
         trace.record(.play, state.traceDeck, .play, state.lastKnownPosition)
-        state.player.play()
+        // `play()` can raise "player did not see an IO cycle" — an NSException,
+        // so uncaught a crash — in a window after the engine (re)starts that no
+        // public property reveals: `isRunning` and every render time already
+        // read valid (seen on CI with two engines starting at once; the same
+        // window follows a restart after a device switch). Catch it and try
+        // again shortly; every guard above is re-checked on retry.
+        guard let exception = KumoneCatchException({ state.player.play() }) else { return }
+        if attempt < Self.playRetries {
+            queue.asyncAfter(deadline: .now() + Self.playRetryInterval) { [weak self] in
+                self?.startNodeIfNeededLocked(state, attempt: attempt + 1)
+            }
+        } else {
+            PlaybackJournal.note("deck start failed deck=\(journalDeckName(state)) "
+                + "after \(attempt + 1) tries: \(exception.reason ?? exception.name.rawValue)")
+        }
     }
-    private static let firstIOCycleRetries = 40
-    private static let firstIOCycleRetryInterval: TimeInterval = 0.025
+    private static let playRetries = 40
+    private static let playRetryInterval: TimeInterval = 0.025
 
     /// Every effect parameter back to transparent. The single place that
     /// knows the neutral pose of a deck's chain — every transition exit path
@@ -3326,7 +3335,11 @@ final class PlaybackEngine: @unchecked Sendable {
         let resume = max(position, state.startOffset)
         scheduleSegmentLocked(state, file: file, from: resume, deck: deck, .stallRestart)
         trace.record(.play, state.traceDeck, .stallRestart, resume)
-        state.player.play()
+        if let exception = KumoneCatchException({ state.player.play() }) {
+            PlaybackJournal.note("deck stall restart raised deck=\(deck.rawValue) "
+                + "(\(exception.reason ?? exception.name.rawValue))")
+            return
+        }
         PlaybackJournal.note(String(format: "deck RESTARTED after stall deck=%@ at=%.3f ",
                                     deck.rawValue, resume) + health)
         dumpEngineTraceLocked(reason: "stall-restart")

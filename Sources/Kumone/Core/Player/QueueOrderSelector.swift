@@ -94,7 +94,7 @@ final class QueueOrderSelector {
     /// escalationFactor` of it. 0 before the first round.
     private var lastRoundSize = 0
     /// Rounds this pick has escalated through — the cost figure the debug panel
-    /// and `audition order` report.
+    /// reports.
     private(set) var rounds = 0
     /// Candidates downloaded for *this* pick. Reset with the pick, unlike
     /// `analyses`, which is cumulative across the session.

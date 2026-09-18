@@ -12,7 +12,7 @@ import Testing
 // summed into the source file. A stub provider hands back the vocal it knows
 // is there, and the assertions are about what the technique does to it — which
 // is the part that has to be right. Whether the RoFormer finds that vocal in a
-// real mixture is StemKit's problem, and `stemtool`'s.
+// real mixture is StemKit's problem.
 @Suite struct StemTechniqueTests {
 
     // MARK: - Contract
@@ -304,8 +304,8 @@ import Testing
     /// gigabyte of it, measured — and the only field-visible record that it
     /// happened is a journal line. But the separator lives in StemKit, which
     /// cannot see `PlaybackJournal`: KumoneCore is deliberately MLX-free and
-    /// the dependency runs one way only. So the hosts (`StemSetup`, the
-    /// `audition` console) wire StemKit's hook to `StemSeparation.note`, and
+    /// the dependency runs one way only. So the host (`StemSetup`) wires
+    /// StemKit's hook to `StemSeparation.note`, and
     /// this is the half of that path that is testable without a 64 MiB
     /// checkpoint and a Metal device — that the door is open, and that a line
     /// pushed through it comes out of the journal intact.

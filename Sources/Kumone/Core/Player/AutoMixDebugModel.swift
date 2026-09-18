@@ -511,6 +511,7 @@ final class AutoMixDebugModel: ObservableObject {
     private static let overridesKey = "automix.debug.overrides"
 
     private static func restoredOverrides() -> AutoMixOverrides {
+        #if DEBUG
         guard let data = UserDefaults.standard.data(forKey: overridesKey),
               let stored = try? JSONDecoder().decode(AutoMixOverrides.self, from: data)
         else {
@@ -537,6 +538,19 @@ final class AutoMixDebugModel: ObservableObject {
             return fresh
         }
         return stored
+        #else
+        // Release builds have no panel to change these from, so a stored value
+        // would be a setting nobody can reach: always start from the tuned
+        // audible defaults, with the diagnostic trace (a ring spill per seam
+        // and an output capture per track) off.
+        var shipped = AutoMixOverrides()
+        shipped.enableScore = true
+        shipped.enableIntent = true
+        shipped.enableBodyLevel = true
+        shipped.enableSeamLevel = true
+        shipped.enableMasterLimiter = true
+        return shipped
+        #endif
     }
 
     /// Go through `PlayerService.setOverrides` instead of calling this: the
@@ -675,7 +689,7 @@ final class AutoMixDebugModel: ObservableObject {
 /// The planner configuration the debug overrides derive.
 ///
 /// It lives here, next to the panel that switches it on, rather than as an
-/// extension on `TransitionPlanner.Config` — the audition console and the
+/// extension on `TransitionPlanner.Config` — the `Audition` facade and the
 /// offline renderer build their own configs and must never reach a forcing one
 /// by accident. `PlayerService.plannerConfig` is the single caller.
 enum AutoMixDebugOverrides {

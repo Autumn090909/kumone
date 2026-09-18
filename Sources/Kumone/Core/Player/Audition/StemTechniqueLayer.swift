@@ -7,8 +7,8 @@ import Foundation
 // KumoneCore deliberately does not depend on StemKit (and therefore not on
 // mlx-swift): separation is a macOS-only, model-backed, 60-seconds-of-budget
 // concern, while this module is the shared playback core. So the renderer asks
-// for a vocal stem through an injected closure and the `audition` target —
-// which does link StemKit — supplies one. Nothing here knows what a model is.
+// for a vocal stem through an injected closure and the host — the app's
+// launcher, which does link StemKit — supplies one. Nothing here knows what a model is.
 
 /// One window of one track, handed to a stem provider.
 ///

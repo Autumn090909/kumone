@@ -127,7 +127,7 @@ public final class StemModelDownloader: ObservableObject {
     /// property and not `StemModelSpec.all` spelled out everywhere.
     let specs: [StemModelSpec]
     private let session: URLSession
-    private var tasks: [String: Task<Void, Never>] = [:]
+    private var tasks: [String: (token: UUID, task: Task<Void, Never>)] = [:]
     /// Files already hashed this session. Re-hashing 264 MB every time the
     /// settings page appears would be a second of disk for no new information.
     private var verified: Set<String> = []
@@ -226,15 +226,29 @@ public final class StemModelDownloader: ObservableObject {
 
     /// Start (or restart) one model's download. A second call while it runs is
     /// ignored rather than racing a duplicate task onto the same destination.
+    ///
+    /// Every download owns its slot through a fresh token. A cancelled task
+    /// keeps running until it notices the cancellation, and by then the user
+    /// may already have started a new one; everything the old task does to
+    /// shared state — progress, `.verifying`, the final move onto the
+    /// destination, clearing the slot — first checks it still holds the
+    /// token, so a stale task can neither unregister its successor (which
+    /// would let a third download start) nor overwrite what it publishes.
     func download(_ spec: StemModelSpec) {
         guard tasks[spec.id] == nil else { return }
         states[spec.id] = .downloading(progress: 0)
 
+        let token = UUID()
         let destination = localURL(for: spec)
         let directory = self.directory
         let session = self.session
+        // Beside the destination, so the final install is a same-volume
+        // rename done on the main actor, where ownership can be checked
+        // atomically. Unique per download, so two tasks never share it.
+        let staged = directory.appendingPathComponent(
+            ".\(spec.fileName).\(token.uuidString).partial")
 
-        tasks[spec.id] = Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self else { return }
             do {
                 let temporary = try await StemModelFetcher.download(
@@ -243,50 +257,72 @@ public final class StemModelDownloader: ObservableObject {
                     session: session
                 ) { received, total in
                     Task { @MainActor in
-                        self.report(spec, received: received, total: total)
+                        self.report(spec, token: token, received: received, total: total)
                     }
                 }
-                defer { try? FileManager.default.removeItem(at: temporary) }
+                defer {
+                    try? FileManager.default.removeItem(at: temporary)
+                    try? FileManager.default.removeItem(at: staged)
+                }
 
+                try Task.checkCancellation()
+                guard self.owns(spec, token) else { return }
                 self.states[spec.id] = .verifying
                 try await Task.detached(priority: .utility) {
                     try Self.verify(temporary, against: spec)
                     try FileManager.default.createDirectory(
                         at: directory, withIntermediateDirectories: true)
-                    try? FileManager.default.removeItem(at: destination)
-                    try FileManager.default.moveItem(at: temporary, to: destination)
+                    try FileManager.default.moveItem(at: temporary, to: staged)
                 }.value
 
-                self.finish(spec, state: .installed)
+                // Back on the main actor: install only if this download still
+                // owns the slot. A cancel (and maybe a new download) during
+                // the hash leaves the staged file to the `defer` above.
+                try Task.checkCancellation()
+                guard self.owns(spec, token) else { return }
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    _ = try FileManager.default.replaceItemAt(destination, withItemAt: staged)
+                } else {
+                    try FileManager.default.moveItem(at: staged, to: destination)
+                }
+
+                self.finish(spec, token: token, state: .installed)
             } catch is CancellationError {
-                self.finish(spec, state: .notInstalled)
+                self.finish(spec, token: token, state: .notInstalled)
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription
                     ?? error.localizedDescription
-                self.finish(spec, state: .failed(message))
+                self.finish(spec, token: token, state: .failed(message))
             }
         }
+        tasks[spec.id] = (token, task)
     }
 
     func cancel(_ spec: StemModelSpec) {
-        tasks[spec.id]?.cancel()
+        tasks[spec.id]?.task.cancel()
         tasks[spec.id] = nil
         states[spec.id] = diskState(for: spec)
     }
 
-    private func report(_ spec: StemModelSpec, received: Int64, total: Int64) {
-        guard case .downloading = state(for: spec) else { return }
+    /// Whether the download started with `token` is still the registered one.
+    private func owns(_ spec: StemModelSpec, _ token: UUID) -> Bool {
+        tasks[spec.id]?.token == token
+    }
+
+    private func report(_ spec: StemModelSpec, token: UUID, received: Int64, total: Int64) {
+        guard owns(spec, token), case .downloading = state(for: spec) else { return }
         let fraction = total > 0 ? min(1, Double(received) / Double(total)) : 0
         states[spec.id] = .downloading(progress: fraction)
     }
 
-    private func finish(_ spec: StemModelSpec, state: StemModelState) {
+    private func finish(_ spec: StemModelSpec, token: UUID, state: StemModelState) {
+        // A task that was cancelled (and possibly replaced) no longer owns the
+        // slot or the row; `cancel` already published the disk state.
+        guard owns(spec, token) else { return }
         tasks[spec.id] = nil
         // Just downloaded means just hashed; no need to hash it again on the
         // next visit to the settings page.
         if state == .installed { verified.insert(spec.id) } else { verified.remove(spec.id) }
-        // A cancel that lands between the download finishing and this line
-        // should not resurrect the row as installed; ask disk instead.
         states[spec.id] = state == .notInstalled ? diskState(for: spec) : state
         if state == .installed { onInstalled?() }
     }

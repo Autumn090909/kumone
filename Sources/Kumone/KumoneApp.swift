@@ -81,9 +81,9 @@ public struct KumoneApp: App {
                 .keyboardShortcut("u", modifiers: .command)
             }
 
-            // Developer tooling, shipped in every macOS build: the listening
-            // machine runs whatever `Scripts/build-app.sh` produced, and a panel
-            // that only exists in some configurations is one nobody reaches for.
+            #if DEBUG
+            // Developer tooling, DEBUG builds only (`Scripts/build-app.sh`
+            // defaults to debug, so the listening machine still gets it).
             // Inert until opened — see `AutoMixDebugModel`.
             CommandMenu(AutoMixDebugPanel.menuTitle) {
                 Button {
@@ -93,14 +93,17 @@ public struct KumoneApp: App {
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
             }
+            #endif
         }
 
+        #if DEBUG
         Window(AutoMixDebugPanel.windowTitle, id: AutoMixDebugPanel.windowID) {
             AutoMixDebugPanel()
                 .preferredColorScheme(settings.appearance.colorScheme)
         }
         .defaultSize(width: 460, height: 620)
         .windowResizability(.contentMinSize)
+        #endif
 
         Settings {
             SettingsView()

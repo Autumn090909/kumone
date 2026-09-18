@@ -2,7 +2,7 @@
 
 > 状态：原型完成，**决策未做**（2026-08-27）
 > 前置阅读：[`automix-stems-predev.md`](automix-stems-predev.md) §8（S1 kill gate）· [`automix-spec.md`](automix-spec.md)
-> 脚本：[`Scripts/stems-prototype/`](../Scripts/stems-prototype/) · A/B 音频：scratchpad `stems-ab/`（不进 repo）
+> 脚本：`Scripts/stems-prototype/`（已从仓库移除，保留在分支历史中：`git log -- Scripts/stems-prototype`） · A/B 音频：scratchpad `stems-ab/`（不进 repo）
 > **未写任何产品 Swift 代码。**
 
 ---
@@ -197,4 +197,4 @@ mlx-community 的模型卡自己披露了一条预研没有的事实：ZFTurbo M
 
 ## 附：复现
 
-脚本与用法见 [`Scripts/stems-prototype/README.md`](../Scripts/stems-prototype/README.md)。原始数据在 scratchpad 的 `stems-ab/render-report.json`（切点、变速比、每次分离的耗时/内存）与 `stems-ab/residue-report.json`（残留指标）。素材是用户曲库的缓存音频，**不进 repo**。
+脚本与用法见 `Scripts/stems-prototype/README.md`（已移除，见分支历史）。原始数据在 scratchpad 的 `stems-ab/render-report.json`（切点、变速比、每次分离的耗时/内存）与 `stems-ab/residue-report.json`（残留指标）。素材是用户曲库的缓存音频，**不进 repo**。

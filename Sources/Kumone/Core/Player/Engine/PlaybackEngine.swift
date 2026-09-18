@@ -329,7 +329,7 @@ final class PlaybackEngine: @unchecked Sendable {
     }
 
     /// Fixed band assignment of every deck's 4-band EQ; see `DeckChain`, which
-    /// the offline `audition` renderer builds its decks from too.
+    /// the offline `OfflineTransitionRenderer` builds its decks from too.
     private typealias EQBand = DeckChain.Band
 
     private let deckStates: [Deck: DeckState]
@@ -371,7 +371,7 @@ final class PlaybackEngine: @unchecked Sendable {
     private let streamLowWater = 10
 
     // The transition's parameter curves — and the constants that shape them —
-    // live in `TransitionAutomation`, so the offline `audition` renderer drives
+    // live in `TransitionAutomation`, so `OfflineTransitionRenderer` drives
     // an identical node graph from exactly the same numbers. Only the values
     // this file still needs outside the overlap tick are aliased here.
     private static let bassCutDB = TransitionAutomation.bassCutDB

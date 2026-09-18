@@ -19,26 +19,45 @@
 # USAGE
 #   Scripts/fetch-mlx-metallib.sh [destination-dir]
 #
-#   destination-dir defaults to .build/release (where `swift build -c release` puts
-#   stemtool). MLX looks for `mlx.metallib` next to the running executable, so the
-#   metallib must sit beside whichever binary you intend to run — repeat for
-#   .build/debug, or for a packaged app's Contents/MacOS.
+#   destination-dir defaults to .build/release (where `swift build -c release
+#   --product Kumone` puts the app binary). MLX looks for `mlx.metallib` next to the
+#   running executable, so the metallib must sit beside whichever binary you intend
+#   to run — repeat for .build/debug, or for a packaged app's Contents/MacOS.
+#   Scripts/build-app.sh copies the first one it finds under .build into the app.
+#
+#   The extracted file is checked against MLX_METALLIB_SHA256 below (also when it
+#   is already present); a mismatch is an error. Bump both together.
 
 set -euo pipefail
 
 MLX_VERSION="0.30.6"
+# sha256 of mlx.metallib from the mlx-metal==0.30.6 macosx_15_0_arm64 wheel.
+MLX_METALLIB_SHA256="62c797721583d990428b197434b4d6c5126c1b8212bc6caf5cd74ca7e0ac1829"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DESTINATION="${1:-$REPO_ROOT/.build/release}"
 
 if [ ! -d "$DESTINATION" ]; then
     echo "error: destination directory does not exist: $DESTINATION" >&2
-    echo "hint: run 'swift build -c release --product stemtool' first" >&2
+    echo "hint: run 'swift build -c release --product Kumone' first" >&2
     exit 1
 fi
+
+verify_sha256() {
+    local actual
+    actual="$(shasum -a 256 "$1" | cut -d' ' -f1)"
+    if [ "$actual" != "$MLX_METALLIB_SHA256" ]; then
+        echo "error: mlx.metallib sha256 mismatch at $1" >&2
+        echo "       expected $MLX_METALLIB_SHA256" >&2
+        echo "       actual   $actual" >&2
+        return 1
+    fi
+    echo "sha256 OK: $actual"
+}
 
 TARGET="$DESTINATION/mlx.metallib"
 if [ -f "$TARGET" ]; then
     echo "mlx.metallib already present at $TARGET"
+    verify_sha256 "$TARGET" || exit 1
     exit 0
 fi
 
@@ -64,6 +83,6 @@ if [ -z "$SOURCE" ]; then
     exit 1
 fi
 
+verify_sha256 "$SOURCE" || exit 1
 cp "$SOURCE" "$TARGET"
 echo "Installed $(du -h "$TARGET" | cut -f1) metallib -> $TARGET"
-echo "sha256: $(shasum -a 256 "$TARGET" | cut -d' ' -f1)"

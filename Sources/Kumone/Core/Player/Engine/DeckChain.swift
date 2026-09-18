@@ -7,7 +7,7 @@ import AudioToolbox
 /// automated parameter.
 ///
 /// `PlaybackEngine` builds its two live decks from this, and
-/// `OfflineTransitionRenderer` (behind the `audition` CLI) builds its two
+/// `OfflineTransitionRenderer` (behind `Audition.render`) builds its two
 /// offline decks from it — so an auditioned transition is rendered through the
 /// same graph the player uses, not a look-alike.
 ///

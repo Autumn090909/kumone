@@ -12,9 +12,9 @@ import Foundation
 //
 // Everything in this file is a pure function of its arguments. The stateful
 // half (which candidates are downloaded, what has lost how many rounds) lives
-// in `QueueOrderSelector`; the offline `audition order` command drives this
-// file directly, so the numbers the console prints are the numbers the player
-// picks on.
+// in `QueueOrderSelector`; the offline `Audition.orderBaseline` family drives
+// this file directly, so the numbers an offline report prints are the numbers
+// the player picks on.
 
 /// How good a hand-over the planner was able to build for a pair — the score's
 /// **dominant** term (predev §2.3: "tier 是主项").
@@ -323,8 +323,8 @@ enum QueueOrderScorer {
     // never sold for a better future.
     //
     // Generic over the pool's key type because there are two callers with two
-    // key spaces — the selector keys by track ID, the offline `audition order`
-    // by file path — and the arithmetic is the same for both.
+    // key spaces — the selector keys by track ID, the offline `Audition.order*`
+    // reports by file path — and the arithmetic is the same for both.
 
     /// The pool a future evaluation actually looks at: `rest` itself when it is
     /// small enough, otherwise a deterministic stride sample of
@@ -376,8 +376,8 @@ enum QueueOrderScorer {
     /// Strictly more informative than the degree — it knows that a hub which
     /// leads only into a second dead end is not really a hub — and strictly
     /// more expensive, at `depth` ranks per candidate rather than one. Which of
-    /// the two earns its price is a question for `audition order`, not for a
-    /// comment.
+    /// the two earns its price is a question for an offline corpus run
+    /// (`Audition.orderBaseline` and friends), not for a comment.
     ///
     /// The greedy inside is the same greedy the chain runs (best `total`, ties
     /// on list order); aging is deliberately *not* advanced, because a rollout

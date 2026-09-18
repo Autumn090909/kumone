@@ -278,9 +278,9 @@ public final class StemSeparator: @unchecked Sendable {
     ///
     /// StemKit cannot see `PlaybackJournal` — KumoneCore is deliberately
     /// MLX-free and the dependency only runs the other way — so the host wires
-    /// this up (`StemSetup`, `StemService`) and StemKit stays a library that
-    /// separates audio. Unset, a trim is silent, which is what `stemtool` and
-    /// `vocaleval` want.
+    /// this up (`StemSetup`) and StemKit stays a library that
+    /// separates audio. Unset, a trim is silent, which is what a plain library
+    /// caller wants.
     public static var onCacheTrim: (@Sendable (String) -> Void)? {
         get { hook.withLock { $0 } }
         set { hook.withLock { $0 = newValue } }

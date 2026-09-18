@@ -166,8 +166,8 @@ enum ScoreTemplate: Equatable, Sendable {
     }
 
     /// The rungs of one family, most impactful first. `cutOnly` is not on any
-    /// ladder: it is reachable only by hand (`audition render --template
-    /// cutOnly`), because a control arm the planner could choose on its own is
+    /// ladder: it is reachable only by hand (an offline render that names the
+    /// template), because a control arm the planner could choose on its own is
     /// not a control arm.
     static func ladder(_ family: Family,
                        config: TransitionPlanner.Config) -> [ScoreTemplate] {

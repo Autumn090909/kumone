@@ -241,7 +241,7 @@ final class PlayerService: ObservableObject {
     }
 
     private var prefetchTask: Task<Void, Never>?
-    private var prefetchedNext: PrefetchedNext?
+    private var prefetchedNext: PrefetchedNext? { didSet { publishCacheFilesInUse() } }
     private var pendingTransitionTrack: Track?
     /// The plan the engine is currently holding, kept so the stem pre-render
     /// knows which seam it is rendering for (and notices when a re-plan moves
@@ -251,7 +251,13 @@ final class PlayerService: ObservableObject {
     private var transitionArmed: Bool { armedPlan != nil }
     /// The complete local file of the track now playing, when there is one —
     /// the outgoing source a stem pre-render reads.
-    private var currentLocalURL: URL?
+    private var currentLocalURL: URL? { didSet { publishCacheFilesInUse() } }
+    /// The cached file each deck was last loaded with (absent: nothing, or a
+    /// stream). Kept for `AudioCache`'s eviction, which must not delete a file
+    /// a deck is playing — a converted (Hi-Res) deck re-opens its file by path
+    /// on every seek or cue. A deck the engine retired on its own may linger
+    /// here until its next load, which only ever protects one file too many.
+    private var deckFiles: [Deck: URL] = [:] { didSet { publishCacheFilesInUse() } }
     /// One parse of the outgoing track's `.lrc`, kept for as long as that file
     /// stays the outgoing one. `Audition.Lyrics.timing(for:)` reads and parses
     /// the sidecar off disk, and the 0.2 s progress tick asks for it on every
@@ -827,6 +833,7 @@ final class PlayerService: ObservableObject {
         // Any armed hand-over is void: this is a hard track change.
         disarmTransition()
         engine.stop(deck: activeDeck.other)
+        deckFiles[activeDeck.other] = nil
         prefetchTask?.cancel()
         prefetchedNext = nil
         currentAnalysis = nil
@@ -978,6 +985,7 @@ final class PlayerService: ObservableObject {
         currentRemoteURL = resolved.url
 
         engine.stop(deck: activeDeck)
+        deckFiles[activeDeck] = nil
         deckLoaded = true
         hasLocalFile = false
 
@@ -1004,6 +1012,7 @@ final class PlayerService: ObservableObject {
                    at: local, on: activeDeck, trimDB: loudnessTrimDB(for: cachedAnalysis),
                    peakDBFS: cachedAnalysis?.peakDBFS) {
                 hasLocalFile = true
+                deckFiles[activeDeck] = local
                 currentLocalURL = local
                 persistCurrentLyricsSidecar()
                 engine.play(deck: activeDeck, from: 0)
@@ -1113,6 +1122,7 @@ final class PlayerService: ObservableObject {
                 // has been hearing it (the stream started at unity), so the
                 // fallback is inaudible.
                 let fileDuration = try engine.loadFile(at: local, on: activeDeck, trimDB: 0)
+                deckFiles[activeDeck] = local
                 hasLocalFile = true
                 currentLocalURL = local
                 persistCurrentLyricsSidecar()
@@ -1187,6 +1197,7 @@ final class PlayerService: ObservableObject {
             // The armed hand-over points at a track that is no longer next.
             disarmTransition()
             engine.stop(deck: activeDeck.other)
+        deckFiles[activeDeck.other] = nil
         }
         prefetchedNext = nil
         guard let target else {
@@ -1246,6 +1257,17 @@ final class PlayerService: ObservableObject {
     }
 
     /// Load the prefetched track on the idle deck and pre-arm the hand-over.
+    /// Tell the cache which of its files playback has open: whatever each
+    /// deck holds, the current track's complete file (seeks, stem
+    /// pre-renders and lyric reads open it by path, even while the deck plays
+    /// the stream it was mirrored from) and the prefetched next one.
+    private func publishCacheFilesInUse() {
+        var urls = Set(deckFiles.values)
+        if let currentLocalURL { urls.insert(currentLocalURL) }
+        if let next = prefetchedNext?.localURL { urls.insert(next) }
+        AudioCache.shared.setFilesInUse(urls)
+    }
+
     private func armTransitionIfReady() {
         guard !transitionArmed, let next = prefetchedNext else { return }
         // "Stop after this track" needs the track to *end*: an armed hand-over
@@ -1259,6 +1281,7 @@ final class PlayerService: ObservableObject {
             AutoMixDebugModel.shared.setNextStage(.failed("incoming deck would not load the file"))
             return
         }
+        deckFiles[incoming] = next.localURL
         let planned = makeTransitionPlan(for: next)
         engine.scheduleTransition(planned, from: activeDeck, to: incoming)
         armedPlan = planned

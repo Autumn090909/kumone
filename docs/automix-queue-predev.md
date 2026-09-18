@@ -2,6 +2,7 @@
 
 > 状态:设计(2026-08-29) · 未写任何产品代码,待听感负责人审阅后动工
 > 前置阅读:[`automix-spec.md`](automix-spec.md) · [`automix-structure-predev.md`](automix-structure-predev.md)
+> 注:文中提到的离线工具(`audition`、`vocaleval`、`stemtool`,及 `docs/audition.md`)已从仓库移除,保留在分支历史中(`git log -- Sources/audition docs/audition.md`)。
 
 ---
 

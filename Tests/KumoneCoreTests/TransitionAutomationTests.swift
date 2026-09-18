@@ -6,7 +6,7 @@ import Foundation
 // The transition's parameter curves, pinned as pure functions.
 //
 // These exist because `TransitionAutomation` is now shared by two consumers:
-// the real-time `PlaybackEngine` tick and the offline `audition` renderer. The
+// the real-time `PlaybackEngine` tick and `OfflineTransitionRenderer`. The
 // engine smoke tests prove the curves are *wired up* (they sample a running
 // graph for each style's fingerprint); these prove the curves are *right*, at
 // far finer resolution than a 20 Hz sampler on a live engine can manage.

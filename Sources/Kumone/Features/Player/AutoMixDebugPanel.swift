@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) && DEBUG
 import AppKit
 import SwiftUI
 
@@ -6,12 +6,11 @@ import SwiftUI
 // without tailing a log while trying to hear a seam. macOS only — there is no
 // AutoMix on iOS (every plan is `.gapless`), so there is nothing to watch.
 //
-// Deliberately **not** compiled out of release builds. The builds that go to
-// the listening machine are made by `Scripts/build-app.sh`, which defaults to
-// the `debug` configuration but is routinely run with `release` too, and a
-// panel that vanishes depending on how the binary was built is a panel nobody
-// trusts. It costs a closed window and one Bool test per playback tick; see
-// `AutoMixDebugModel`.
+// DEBUG builds only (as is its menu and window scene in `KumoneApp`).
+// `Scripts/build-app.sh` defaults to the `debug` configuration, so the builds
+// that go to the listening machine keep it; release builds never show it.
+// `AutoMixDebugModel` itself stays compiled everywhere and is inert unless
+// this panel opens it.
 //
 // Labels are hardcoded English. The app is zh-Hans-first and every user-facing
 // string is a Chinese key in `Localizable.strings`, so each label here goes

@@ -57,10 +57,9 @@ enum TrackAnalyzer {
     ///
     /// **On the pool, and what it is worth.** Two whole-track decodes happen
     /// here, and every caller that matters calls this in a loop:
-    /// `QueueOrderSelector` walks its candidate pool, `audition batch` and
-    /// `sweep` walk a corpus, the app analyzes a queue — all off the main
-    /// thread, on a `Task.detached` or a plain CLI loop, where no runloop turn
-    /// ever drains the outer pool.
+    /// `QueueOrderSelector` walks its candidate pool, the app analyzes a
+    /// queue — all off the main thread, on a `Task.detached`, where no runloop
+    /// turn ever drains the outer pool.
     ///
     /// The pool is here as the boundary that *bounds* that, not because it was
     /// found to be reclaiming anything. It was measured, and it is worth
@@ -95,63 +94,6 @@ enum TrackAnalyzer {
     /// `samples` is mono; any sample rate is accepted and resampled.
     static func analyze(samples: [Float], sampleRate: Double) -> TrackAnalysis {
         analyze(samples: samples, sampleRate: sampleRate, midSide: nil)
-    }
-
-    /// S0.5 validation hook (offline `vocaleval` only, never the app).
-    ///
-    /// Runs one decode + one STFT pass and returns the per-second cue vectors
-    /// together with both fusions: `v4` replays the three-cue weighting that
-    /// shipped before this change, `v5` is what the analyzer now produces. Both
-    /// therefore rest on byte-identical features, so a correlation difference
-    /// between them is attributable to the fusion weights and the new mid/side
-    /// cue alone — not to decode or windowing drift.
-    static func vocalActivityAB(fileAt url: URL) throws -> VocalActivityAB {
-        // Pooled per file, for the reason `analyze(fileAt:)` is: two whole-track
-        // decodes, and `vocaleval` calls it once per corpus track in a loop.
-        try autoreleasepool {
-            try vocalActivityABUnpooled(fileAt: url)
-        }
-    }
-
-    private static func vocalActivityABUnpooled(fileAt url: URL) throws -> VocalActivityAB {
-        let sr = analysisSampleRate
-        let x = try decodeMono(url: url, targetRate: sr)
-        let rmsEnvelope = rmsPerSecond(x, sampleRate: sr)
-        let duration = Double(x.count) / sr
-        guard x.count >= windowSize * 4 else {
-            return VocalActivityAB(
-                v4: [], v5: [], cues: [], rmsEnvelope: rmsEnvelope,
-                duration: duration, hadStereo: false)
-        }
-        let features = stftFeatures(x, sampleRate: sr)
-        let midSide = try? stereoVoiceEnergies(url: url, targetRate: sr)
-        let midShare: [Float]? = midSide.map {
-            midSharePerFrame(mid: $0.mid, side: $0.side, frames: features.bandRatio.count)
-        }
-        let cues = vocalCues(
-            bandRatio: features.bandRatio,
-            flatness: features.flatness,
-            bandEnvelope: features.bandEnvelope,
-            midShare: midShare,
-            fps: sr / Double(hopSize),
-            rmsEnvelope: rmsEnvelope)
-        return VocalActivityAB(
-            v4: fuseVocalCues(cues, legacyV4: true),
-            v5: fuseVocalCues(cues),
-            cues: cues,
-            rmsEnvelope: rmsEnvelope,
-            duration: duration,
-            hadStereo: midShare != nil)
-    }
-
-    struct VocalActivityAB: Sendable {
-        let v4: [Float]
-        let v5: [Float]
-        let cues: [VocalCues]
-        let rmsEnvelope: [Float]
-        let duration: Double
-        /// False for a genuinely mono master — the mid/side cue is inert there.
-        let hadStereo: Bool
     }
 
     /// Core analysis. `midSide`, when present, carries per-STFT-frame vocal-band
@@ -1232,10 +1174,8 @@ enum TrackAnalyzer {
         return fuseVocalCues(cues)
     }
 
-    /// The per-second cue vector behind `vocalActivity`, kept as a named type so
-    /// the offline validation harness (`vocaleval`, S0.5) can dump the cues and
-    /// re-fuse them under alternative weights without re-running any FFTs — and
-    /// so v4's fusion can be replayed on byte-identical features for the A/B.
+    /// The per-second cue vector behind `vocalActivity`, kept as a named type
+    /// so the cues can be inspected and re-fused without re-running any FFTs.
     /// Each `s*` field is already squashed to 0...1.
     struct VocalCues: Sendable {
         /// Vocal-band energy share (cue 1).
@@ -1316,21 +1256,14 @@ enum TrackAnalyzer {
     }
 
     /// Weighted fusion of the per-second cues, 3-second median smoothed.
-    ///
-    /// `legacyV4` replays the three-cue fusion that shipped in v4 (ignoring the
-    /// mid/side cue, and using v4's weights, even when a stereo image is
-    /// present) — used only by the offline harness, so the before/after
-    /// comparison runs on identical features.
-    static func fuseVocalCues(_ cues: [VocalCues], legacyV4: Bool = false) -> [Float] {
+    static func fuseVocalCues(_ cues: [VocalCues]) -> [Float] {
         var raw = [Float](repeating: 0, count: cues.count)
         for (s, c) in cues.enumerated() {
             // Mono-spectral combination; weights sum to 1. This alone governs
             // mono input, where the stereo-centre cue does not exist.
-            let monoCombo = legacyV4
-                ? v4BandWeight * c.band + v4TonalWeight * c.tonal + v4ModWeight * c.mod
-                : bandWeight * c.band + tonalWeight * c.tonal + modWeight * c.mod
+            let monoCombo = bandWeight * c.band + tonalWeight * c.tonal + modWeight * c.mod
             // Stereo-centre share, blended in when available.
-            let combined = (!legacyV4 && c.hasMid)
+            let combined = c.hasMid
                 ? (1 - midWeight) * monoCombo + midWeight * c.mid
                 : monoCombo
             raw[s] = Float(clamp01(c.presence * combined * c.gate))
@@ -1339,19 +1272,15 @@ enum TrackAnalyzer {
     }
 
     // Fusion weights, fit on the eval corpus against StemKit per-second
-    // vocal/mix ground truth via the `vocaleval` harness (18 tracks across all
-    // six playlists, 3×30 s windows each). The search was run under
-    // leave-one-playlist-out CV; band-dominant weights with a ~0.35 centre blend
-    // were stable across all six folds. The v4 set is retained verbatim so the
-    // harness can reproduce the pre-change curve for the A/B.
+    // vocal/mix ground truth via an offline harness (18 tracks across all six
+    // playlists, 3×30 s windows each; the harness lives in the branch history).
+    // The search was run under leave-one-playlist-out CV; band-dominant weights
+    // with a ~0.35 centre blend were stable across all six folds.
     private static let bandWeight = 0.55
     private static let tonalWeight = 0.20
     private static let modWeight = 0.25
     /// Weight of the stereo-centre cue when a stereo image is available.
     private static let midWeight = 0.35
-    private static let v4BandWeight = 0.40
-    private static let v4TonalWeight = 0.35
-    private static let v4ModWeight = 0.25
 
     /// Per-frame centre share `mid/(mid+side)` of vocal-band energy, aligned to
     /// `frames`. 1 → fully centred (mono-in-stereo), 0 → pure side, 0.5 →

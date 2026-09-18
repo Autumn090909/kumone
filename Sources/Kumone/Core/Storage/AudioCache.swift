@@ -1,5 +1,6 @@
 #if os(macOS)
 import Foundation
+import os
 
 /// Disk cache for full song audio, with LRU eviction by file mtime and
 /// in-flight download coalescing. See docs/automix-spec.md §3.
@@ -23,9 +24,19 @@ actor AudioCache {
     /// `Audition.Lyrics` reads), so it needs its own path math.
     private static let lyricsExtension = "lrc"
 
+    /// A `.part` touched within this long is a live progressive write and is
+    /// left entirely alone by eviction; an older one is an abandoned stream
+    /// (skipped mid-song, app quit) that nothing will ever commit.
+    static let stalePartAge: TimeInterval = 60 * 60
+
     private let directory: URL
     private var inflight: [Key: Task<URL, Error>] = [:]
     private(set) var limitBytes: Int64
+    /// Resolved paths of files a deck currently has open (or is about to), as
+    /// last reported by the player. Lock-protected rather than actor-isolated
+    /// so the player can replace it synchronously, in order, from the main
+    /// actor — an async hop per change could land out of order.
+    private let inUse = OSAllocatedUnfairLock(initialState: Set<String>())
 
     private init() {
         directory = KumoneDirectories.caches("Audio")
@@ -35,6 +46,13 @@ actor AudioCache {
         } else {
             limitBytes = SettingsManager.defaultAudioCacheLimit
         }
+    }
+
+    /// A private cache over `directory`, for tests. Does not read or write the
+    /// persisted limit.
+    init(directory: URL, limitBytes: Int64) {
+        self.directory = directory
+        self.limitBytes = limitBytes
     }
 
     // MARK: - Lookup
@@ -108,6 +126,24 @@ actor AudioCache {
         inflight[key]
     }
 
+    // MARK: - In use
+
+    /// Replace the set of cached files playback has open: both decks' loaded
+    /// files, plus the armed next track and the current one's complete file,
+    /// which stem pre-renders and seeks re-open by path. Eviction never
+    /// deletes these, however stale their mtime — AutoMix candidate prefetches
+    /// touch many files, so LRU order alone does not keep a playing file safe.
+    nonisolated func setFilesInUse(_ urls: some Sequence<URL>) {
+        let paths = Set(urls.map(Self.identity))
+        inUse.withLock { $0 = paths }
+    }
+
+    /// One spelling per file (`/var` vs `/private/var`, `..`), so a URL the
+    /// player built and one read back from the directory compare equal.
+    private static func identity(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
     // MARK: - Limits & maintenance
 
     /// 0 means unlimited. Shrinking the limit evicts immediately.
@@ -168,26 +204,38 @@ actor AudioCache {
         }
     }
 
-    /// Deletes least-recently-used audio (and its `.lrc`) until total usage
-    /// fits the limit. In-progress `.part` files and `spare` are never removed.
-    private func evictIfNeeded(sparing spare: URL?) {
+    /// Deletes least-recently-used audio (and its `.lrc`) until usage fits
+    /// the limit. Never removed: `spare`, files registered through
+    /// ``setFilesInUse(_:)``, and live `.part` files.
+    ///
+    /// The `.part` rule, and why: a live one (touched within
+    /// ``stalePartAge``) is being written by the playing stream and cannot be
+    /// deleted, so it is not counted either — counting what may not be
+    /// evicted only made every pass strip the whole cache chasing a total it
+    /// could never reach. It is counted once it commits. A stale one is an
+    /// abandoned stream nothing will ever commit, so it counts and is
+    /// evictable like any other file, by age.
+    func evictIfNeeded(sparing spare: URL?) {
         guard limitBytes > 0 else { return }
-        let files = allFiles()
+        let staleBefore = Date().addingTimeInterval(-Self.stalePartAge)
+        let files = allFiles().filter {
+            !($0.url.lastPathComponent.hasSuffix(Self.partSuffix) && $0.modified >= staleBefore)
+        }
         var usage = files.reduce(0) { $0 + $1.size }
         guard usage > limitBytes else { return }
 
+        var protected = inUse.withLock { $0 }
+        if let spare { protected.insert(Self.identity(spare)) }
         let lyricsSizes = Dictionary(
             uniqueKeysWithValues: files
                 .filter { $0.url.pathExtension == Self.lyricsExtension }
                 .map { ($0.url.path, $0.size) })
         let candidates = files
             .filter {
-                let name = $0.url.lastPathComponent
-                return !name.hasSuffix(Self.partSuffix)
-                    // A `.lrc` is not audio; evicting it on its own would strip
-                    // a live track of its hand-over words to reclaim a few KB.
-                    && $0.url.pathExtension != Self.lyricsExtension
-                    && $0.url.path != spare?.path
+                // A `.lrc` is not audio; evicting it on its own would strip
+                // a live track of its hand-over words to reclaim a few KB.
+                $0.url.pathExtension != Self.lyricsExtension
+                    && !protected.contains(Self.identity($0.url))
             }
             .sorted { $0.modified < $1.modified }
 

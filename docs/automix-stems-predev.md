@@ -506,7 +506,7 @@ static func plan(outgoing: TrackAnalysis?,
 2. ZFTurbo MSST 仓库里由第三方贡献的 checkpoint（viperx / gabox / Kimberley Jensen 版）是否各自继承仓库 MIT。
 3. ~~`AVAudioEngine.enableManualRenderingMode(.offline,)` 在 M 系列上的实际渲染倍速。~~
    **✅ 已实测（Apple M4，release build）：72×–206× 实时，15 对真实曲目平均 154×。**
-   测量方式见 `docs/audition.md`：与实时图同构的双 deck 图
+   测量方式见 `docs/audition.md`（已移除，见分支历史）：与实时图同构的双 deck 图
    （player → timePitch → EQ(4band) → delay → mixer ×2，44.1 kHz 立体声），
    按 50 Hz 粒度写参数、逐帧 `renderOffline`，渲染 27–41 s 的过渡片段耗时 0.13–0.36 s。
    §5.1「方案 A：离线预渲染」的时间预算因此**不是约束**（§9 的 🟡 风险可关闭）：

@@ -21,8 +21,9 @@ enum TransitionPlanner {
     /// Every tunable the decision turns on, in one value. `Config.standard`
     /// holds the shipped numbers and is the default everywhere, so the
     /// product path behaves exactly as it did when these were bare
-    /// constants; `audition serve` swaps in a modified copy to explore what
-    /// a different calibration would have decided.
+    /// constants; offline tuning (`Audition.decide(config:)`) swaps
+    /// in a modified copy to explore what a different calibration would have
+    /// decided.
     struct Config: Sendable, Equatable {
         var minTrackDuration: TimeInterval = 45
         var bpmConfidenceThreshold: Double = 0.6
@@ -537,7 +538,7 @@ enum TransitionPlanner {
         // the knob is **off**, so the planner writes no `TransitionStyle.score`
         // and every decision, curve and rendered sample is field-for-field what
         // it was before the score model existed. The debug panel's A/B toggle
-        // and the audition console are how it gets heard.
+        // and offline `Audition` renders are how it gets heard.
 
         /// Emit a `TransitionScore` on hand-overs that qualify for one.
         ///
@@ -677,7 +678,7 @@ enum TransitionPlanner {
         /// ten of this library". That cache contains no rock, which is exactly
         /// the material the line is *for* — so this number is where a pop
         /// distribution ends, not where a wall of guitars begins, and the
-        /// honest re-check is `audition intent` pointed at a rock-bearing
+        /// honest re-check is an offline intent run over a rock-bearing
         /// corpus. It is reachable rather than validated. The branch it feeds
         /// also demands a grid we already mistrust, which is what keeps a
         /// provisional line from doing provisional damage.
@@ -1681,8 +1682,8 @@ enum TransitionPlanner {
     // MARK: - Key gate
 
     /// Circle-of-fifths distance between two confident keys; nil when either
-    /// key is missing or below the confidence gate. Exposed so `audition` can
-    /// print the number the decision actually turned on.
+    /// key is missing or below the confidence gate. Exposed so `Audition` can
+    /// report the number the decision actually turned on.
     static func keyDistance(
         _ a: TrackAnalysis, _ b: TrackAnalysis, config: Config = .standard
     ) -> Int? {
@@ -1730,7 +1731,7 @@ enum TransitionPlanner {
     }
 
     /// The three raw numbers the tier gate turns on, kept together so
-    /// `audition` can print them (and how close each sits to its threshold)
+    /// `Audition` can report them (and how close each sits to its threshold)
     /// rather than re-deriving them and drifting from the real decision.
     struct Signals {
         /// |dB| level gap left at the hand-over **as it will be heard**, after

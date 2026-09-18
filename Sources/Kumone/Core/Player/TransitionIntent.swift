@@ -19,7 +19,7 @@ import Foundation
 //
 //   * **Pure.** Two analyses, a little queue metadata, a config. No files, no
 //     clock, no network. The same pair always classifies the same way, which is
-//     what makes `audition intent` a corpus tool rather than a guess.
+//     what makes it checkable over a corpus rather than a guess.
 //   * **No new analysis.** Every input is a v7 field that is already on disk:
 //     `downbeats`, `bpmConfidence`, `melProfile`, `rmsEnvelope`,
 //     `vocalActivity`, `sections`. **No `TrackAnalysis.currentVersion` bump**,

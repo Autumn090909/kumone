@@ -63,7 +63,7 @@ enum ScoreCompiler {
     // the out point comes from and the intro neighbourhood the in point comes
     // from — where a track is ritarding, breaking down, or has not settled yet.
     // Re-measured over the owner's cache on exactly those windows — 86 analyzed
-    // tracks, 752 exit- and entry-side windows, `audition grid --all-pairs`:
+    // tracks, 752 exit- and entry-side windows, every pair (offline grid run):
     //
     //     median 1.60 %   p75 3.36 %   p90 6.29 %   p95 8.11 %   p99 12.55 %
     //

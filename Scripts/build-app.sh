@@ -61,12 +61,30 @@ mkdir -p "$APP_BUNDLE/Contents/Frameworks"
 cp -a "$SPARKLE_FW" "$APP_BUNDLE/Contents/Frameworks/"
 
 # MLX's Metal kernels, for AutoMix stem transitions. MLX loads `mlx.metallib`
-# from beside the running binary, and a Command Line Tools-only build cannot
-# produce one — Scripts/fetch-mlx-metallib.sh installs it into .build. Copy it
-# in when it is there; without it the app simply never pre-renders stem
-# hand-overs (StemKit.ResidentStemSeparator.isRunnable says no).
-METALLIB="$(find "$ROOT/.build" -name 'mlx.metallib' -print -quit 2>/dev/null || true)"
+# from beside the running binary first, so the app always gets one there.
+# Sources, most specific first:
+#   1. $BIN_PATH/mlx.metallib — placed beside this very configuration's binary
+#      by Scripts/fetch-mlx-metallib.sh (Command Line Tools builds).
+#   2. The kernels SwiftPM compiled in this build — with Xcode (and its Metal
+#      Toolchain) mlx-swift's sources become
+#      $BIN_PATH/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib and
+#      no file named mlx.metallib exists. Built from the pinned sources by
+#      this same invocation, so it cannot be stale.
+#   3. Any other mlx.metallib under .build (e.g. fetched into another
+#      configuration's directory) — fetch-mlx-metallib.sh sha-checks what it
+#      installs, so this is still the pinned MLX version.
+# Without any of them the app would never pre-render stem hand-overs
+# (StemKit.ResidentStemSeparator.isRunnable says no).
+CMLX_METALLIB="$BIN_PATH/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+if [ -f "$BIN_PATH/mlx.metallib" ]; then
+  METALLIB="$BIN_PATH/mlx.metallib"
+elif [ -f "$CMLX_METALLIB" ]; then
+  METALLIB="$CMLX_METALLIB"
+else
+  METALLIB="$(find "$ROOT/.build" -name 'mlx.metallib' -not -path "$BUILD_DIR/*" -print -quit 2>/dev/null || true)"
+fi
 if [ -n "$METALLIB" ]; then
+  echo "mlx.metallib <- $METALLIB"
   cp "$METALLIB" "$APP_BUNDLE/Contents/MacOS/mlx.metallib"
 else
   # Shipping without the kernels silently disables every stem hand-over and
@@ -74,9 +92,12 @@ else
   # of "everything falls to stagedEQ" traced back to exactly this). Fail
   # loudly instead; a clean of .build eats the metallib, and the fix is one
   # command.
-  echo "error: mlx.metallib not found under .build — the app would ship with" >&2
-  echo "       stem separation disabled. Run Scripts/fetch-mlx-metallib.sh" >&2
-  echo "       (after 'swift build -c release --product stemtool') first." >&2
+  echo "error: no mlx.metallib under .build and no compiled Cmlx kernels at" >&2
+  echo "       $CMLX_METALLIB —" >&2
+  echo "       the app would ship with stem separation disabled. Run" >&2
+  echo "       Scripts/fetch-mlx-metallib.sh (after 'swift build -c release" >&2
+  echo "       --product Kumone') first, or with Xcode install the Metal" >&2
+  echo "       Toolchain (xcodebuild -downloadComponent MetalToolchain)." >&2
   exit 1
 fi
 
@@ -85,8 +106,11 @@ for lproj in "$ROOT"/Sources/Kumone/Resources/*.lproj; do
   [ -d "$lproj" ] && cp -R "$lproj" "$APP_BUNDLE/Contents/Resources/"
 done
 
-# SwiftPM resource bundles (if any)
-find "$BIN_PATH" -maxdepth 1 -name '*.bundle' -not -name '*Tests*' -print0 |
+# SwiftPM resource bundles (if any). mlx-swift_Cmlx.bundle only carries the
+# kernels already copied to Contents/MacOS/mlx.metallib above (~100 MB), and
+# MLX finds the colocated copy first, so it is left out.
+find "$BIN_PATH" -maxdepth 1 -name '*.bundle' -not -name '*Tests*' \
+  -not -name 'mlx-swift_Cmlx.bundle' -print0 |
   while IFS= read -r -d '' bundle; do
     cp -R "$bundle" "$APP_BUNDLE/Contents/Resources/"
   done

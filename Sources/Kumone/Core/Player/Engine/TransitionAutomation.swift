@@ -7,7 +7,7 @@ import Foundation
 /// given the plan, the chosen style and how far into the overlap we are, it
 /// returns the target fader / EQ / high-pass / delay / rate values for both
 /// decks. `PlaybackEngine` applies a frame per real-time tick; the offline
-/// renderer (`OfflineTransitionRenderer`, used by the `audition` CLI) applies
+/// renderer (`OfflineTransitionRenderer`, behind `Audition.render`) applies
 /// the same frames to an identical node graph in manual rendering mode. There
 /// is exactly one copy of the curves, so what you audition offline is what the
 /// player does.
@@ -468,7 +468,7 @@ enum TransitionAutomation {
     ///
     /// `approximateStems` is the live engine's stand-in for a stem technique
     /// it cannot perform (see below). Pass false when the deck really is being
-    /// fed separated stems — a pre-rendered segment, or an audition render with
+    /// fed separated stems — a pre-rendered segment, or an offline render with
     /// a separator wired up — or the duck lands *on top of* the technique it
     /// was only ever meant to imitate.
     static func frame(plan: TransitionPlan, style: TransitionStyle,
@@ -637,7 +637,7 @@ enum TransitionAutomation {
     /// is small exactly where its fader is highest, and before that the two
     /// decks hold complementary bands. Measured on the offline renders of two
     /// real seams at the shipped trims and ride, sample peak across swap ± 2 s
-    /// on the player path (i.e. with the audition renderer's blind-test
+    /// on the player path (i.e. with the offline renderer's blind-test
     /// normalization undone):
     ///
     /// | seam | symmetric | dominant | margin |

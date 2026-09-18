@@ -284,7 +284,7 @@ import Foundation
 
     // MARK: - Offline parity
 
-    /// The audition console's renders are the A/B evidence for this gesture, so
+    /// Offline `Audition` renders are the A/B evidence for this gesture, so
     /// the offline path has to walk the same curve the deck does. The cheap
     /// observable: the render's pre-roll is the outgoing song's own
     /// `preRoll` seconds, so under a glide it occupies *more* rendered seconds

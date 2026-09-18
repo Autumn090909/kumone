@@ -6,7 +6,7 @@ import Foundation
 ///
 /// This is glue, not DSP: the audio comes out of
 /// `OfflineTransitionRenderer.renderMix` — the same graph, the same automation
-/// curves and the same `StemTechniqueLayer` the audition console renders
+/// curves and the same `StemTechniqueLayer` offline `Audition` renders go
 /// through — and everything here does is choose the window, compile a
 /// `.vocalExchange` marker into curves, and note where the two ends of the
 /// result sit on the two songs' clocks.

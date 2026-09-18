@@ -14,11 +14,29 @@ import Testing
 private final class StemStubProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var payload = Data()
     nonisolated(unsafe) static var statusCode = 200
+    /// Seconds to hold each response back, so a test can act while a
+    /// download is still in flight. Zero answers immediately.
+    nonisolated(unsafe) static var delay: TimeInterval = 0
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _requestCount = 0
+    /// How many requests reached the "server" — i.e. real transfers started.
+    static var requestCount: Int {
+        get { lock.lock(); defer { lock.unlock() }; return _requestCount }
+        set { lock.lock(); _requestCount = newValue; lock.unlock() }
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        Self.lock.lock()
+        Self._requestCount += 1
+        Self.lock.unlock()
+        guard Self.delay > 0 else { return respond() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.delay) { self.respond() }
+    }
+
+    private func respond() {
         let response = HTTPURLResponse(
             url: request.url!, statusCode: Self.statusCode, httpVersion: "HTTP/1.1",
             headerFields: ["Content-Length": String(Self.payload.count)])!
@@ -294,6 +312,44 @@ struct StemModelDownloaderStateTests {
         #expect(
             !FileManager.default.fileExists(
                 atPath: directory.appendingPathComponent(model.fileName).path))
+    }
+
+    /// Cancel, then download again straight away. The cancelled task still
+    /// runs to its `catch` afterwards; it must not unregister the new
+    /// download (which would let a third one start onto the same file) nor
+    /// publish its own `.notInstalled` over the new download's progress.
+    @Test func aStaleCancelledTaskCannotClobberTheNextDownload() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let payload = Data((0..<300_000).map { UInt8($0 % 241) })
+        let model = spec(named: "model.safetensors", payload: payload)
+        StemStubProtocol.payload = payload
+        StemStubProtocol.statusCode = 200
+        StemStubProtocol.requestCount = 0
+        StemStubProtocol.delay = 1.5
+        defer { StemStubProtocol.delay = 0 }
+
+        let downloader = StemModelDownloader(
+            directory: directory, session: stubSession(), specs: [model])
+        downloader.download(model)
+        downloader.cancel(model)
+        downloader.download(model)
+
+        // The second download reaches the server; give the first, cancelled
+        // task time to hit its catch and try to finish.
+        #expect(await eventually { StemStubProtocol.requestCount >= 1 })
+        try? await Task.sleep(for: .milliseconds(300))
+        #expect(downloader.state(for: model).isBusy,
+                "stale task overwrote the row: \(downloader.state(for: model))")
+
+        // Still registered, so a third call is ignored rather than racing.
+        downloader.download(model)
+        #expect(await eventually { downloader.state(for: model) == .installed })
+        #expect(StemStubProtocol.requestCount == 1)
+        #expect(try Data(contentsOf: directory.appendingPathComponent(model.fileName)) == payload)
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(leftovers == [model.fileName])
     }
 
     @Test func refreshReadsInstalledStateFromDisk() async throws {

@@ -7,7 +7,7 @@ import Foundation
 /// KumoneCore does not depend on StemKit — separation is a macOS-only,
 /// model-backed, seconds-per-window concern and this module is the shared
 /// playback core. So the separator is *installed* from outside (the app's
-/// launcher, the `audition` CLI) as a plain closure, and everything here knows
+/// launcher) as a plain closure, and everything here knows
 /// is whether one showed up.
 ///
 /// Nothing installed is the shipping default and the byte-identical path: the
@@ -152,8 +152,8 @@ public enum StemSeparation {
     }
 }
 
-/// Sidecar cache for separated vocals, shared by the app and the `audition`
-/// console so a window separated by one is instant for the other.
+/// Sidecar cache for separated vocals, shared by the app's pre-render and any
+/// offline render so a window separated by one is instant for the other.
 ///
 /// Two costs shape it: a separation pass is ~1× realtime on an M4, and the
 /// same window is asked for again every time the same pair of songs meets.

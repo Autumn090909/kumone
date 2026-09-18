@@ -2,8 +2,8 @@ import Foundation
 
 /// The process's one separator, loaded on demand and kept warm.
 ///
-/// Two callers need exactly this — the `audition` console and the app's
-/// AutoMix pre-render — and both want the same three things: load the 64 MiB
+/// The app's AutoMix pre-render needs exactly this (as did the offline
+/// `audition` console, now in the branch history) — three things: load the 64 MiB
 /// checkpoint at most once, call the `async` separator from a synchronous pull
 /// loop, and ask "could this machine separate at all?" without triggering a
 /// download or a Metal failure.

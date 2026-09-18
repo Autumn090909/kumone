@@ -11,8 +11,8 @@ import Foundation
 // with — through `TransitionPlanner`, so nothing here is a model of the
 // player: it *is* the player's decision, run offline.
 //
-// Public because `Sources/audition` lives outside the module and every
-// internal type (`TrackAnalysis`, `TransitionPlanner`, `QueueOrderScore`) has
+// Public because its offline caller (the `audition` CLI, now only in the
+// branch history) lived outside the module, and every internal type (`TrackAnalysis`, `TransitionPlanner`, `QueueOrderScore`) has
 // to be flattened into strings and Doubles to cross that line anyway.
 
 extension Audition {

@@ -8,7 +8,7 @@ import Foundation
 /// Stem techniques cannot be performed by the live graph: separating a vocal
 /// costs seconds per window and the deck chain has nowhere to put the result.
 /// So a hand-over that asks for one is rendered ahead of time by the very code
-/// the audition renderer uses (`OfflineTransitionRenderer.renderMix`, stem
+/// the offline renderer uses (`OfflineTransitionRenderer.renderMix`, stem
 /// layer included), and the engine plays *that* instead — the outgoing deck
 /// stops at the segment's head, the incoming deck resumes at its tail, and in
 /// between there is one pre-mixed buffer carrying both tracks.

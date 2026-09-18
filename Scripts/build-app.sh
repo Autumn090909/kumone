@@ -32,9 +32,18 @@ for arch in ${ARCHES:-}; do
   ARCH_FLAGS+=(--arch "$arch")
 done
 
+# Extra SwiftPM flags from the environment, e.g. on a Command-Line-Tools-only
+# macOS 27 machine: SWIFT_BUILD_FLAGS="--build-system native" together with
+# SDKROOT=…/MacOSX26.5.sdk (the Swift Build backend wants a `metal` compiler
+# CLT does not ship, and the 27 SDK's SwiftUI macros need a plugin it lacks).
+EXTRA_FLAGS=()
+for flag in ${SWIFT_BUILD_FLAGS:-}; do
+  EXTRA_FLAGS+=("$flag")
+done
+
 # ${arr[@]+...} keeps macOS's bash 3.2 happy under set -u with empty arrays
-swift build -c "$CONF" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --product "$APP_NAME"
-BIN_PATH="$(swift build -c "$CONF" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)"
+swift build -c "$CONF" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --product "$APP_NAME"
+BIN_PATH="$(swift build -c "$CONF" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)"
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"

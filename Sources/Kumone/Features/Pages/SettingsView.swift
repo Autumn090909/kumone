@@ -60,6 +60,9 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                // Stem separation runs on MLX, which is Apple silicon only —
+                // the x86_64 slice of the universal app never offers it.
+                #if arch(arm64)
                 // Off *and* unavailable until the model is on disk: a toggle
                 // that cannot do anything must not look like it can, and the
                 // section below is where it becomes possible.
@@ -70,6 +73,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 StemModelsSettingsSection()
+                #endif
             } header: {
                 Text("AutoMix")
             } footer: {

@@ -75,8 +75,14 @@ public final class ResidentStemSeparator: @unchecked Sendable {
     /// existed.
     public static func isRunnable(modelStore: ModelStore = ModelStore(),
                                   descriptor: ModelDescriptor = .zfturboVocalsV1) -> Bool {
+        #if arch(arm64)
         FileManager.default.fileExists(atPath: modelStore.localURL(for: descriptor).path)
             && metallibURL() != nil
+        #else
+        // The release app is universal, but MLX's Metal backend is Apple
+        // silicon only: the x86_64 slice compiles and must never run it.
+        false
+        #endif
     }
 
     /// Where MLX will find its kernels, if it can: beside the running binary

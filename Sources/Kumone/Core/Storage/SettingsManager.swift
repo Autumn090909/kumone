@@ -108,10 +108,43 @@ final class SettingsManager: ObservableObject {
         static let desktopLyricsCentered = "settings.desktopLyricsCentered"
         static let mainWindowAmbientBackground = "settings.showMainWindowAmbientBackground"
         static let mainWindowAmbientBackgroundIntensity = "settings.mainWindowAmbientBackgroundIntensity"
+        static let enableAudioCache = "settings.enableAudioCache"
+        static let audioCacheSizeMB = "settings.audioCacheSizeMB"
     }
 
     @Published var audioQuality: AudioQuality {
         didSet { UserDefaults.standard.set(audioQuality.rawValue, forKey: Keys.quality) }
+    }
+
+    static let audioCacheSizeRangeMB = 100...1_000
+    static let audioCacheSizeStepMB = 100
+
+    /// Use locally stored audio files before resolving a remote source and
+    /// retain completed remote playback for future requests.
+    @Published var enableAudioCache: Bool {
+        didSet { UserDefaults.standard.set(enableAudioCache, forKey: Keys.enableAudioCache) }
+    }
+
+    static func normalizedAudioCacheSizeMB(_ value: Int) -> Int {
+        let boundedValue = min(
+            max(value, audioCacheSizeRangeMB.lowerBound),
+            audioCacheSizeRangeMB.upperBound
+        )
+        let distanceFromLowerBound = boundedValue - audioCacheSizeRangeMB.lowerBound
+        return audioCacheSizeRangeMB.lowerBound
+            + Int((Double(distanceFromLowerBound) / Double(audioCacheSizeStepMB)).rounded())
+                * audioCacheSizeStepMB
+    }
+
+    @Published var audioCacheSizeMB: Int {
+        didSet {
+            let normalizedValue = Self.normalizedAudioCacheSizeMB(audioCacheSizeMB)
+            guard normalizedValue == audioCacheSizeMB else {
+                audioCacheSizeMB = normalizedValue
+                return
+            }
+            UserDefaults.standard.set(audioCacheSizeMB, forKey: Keys.audioCacheSizeMB)
+        }
     }
 
     @Published var appearance: AppAppearance {
@@ -203,6 +236,12 @@ final class SettingsManager: ObservableObject {
     private init() {
         let defaults = UserDefaults.standard
         audioQuality = defaults.string(forKey: Keys.quality).flatMap(AudioQuality.init) ?? .exhigh
+        enableAudioCache = defaults.object(forKey: Keys.enableAudioCache) as? Bool ?? true
+        let storedAudioCacheSizeMB = defaults.object(forKey: Keys.audioCacheSizeMB) as? Int
+            ?? AudioCache.defaultMaximumSizeMB
+        let normalizedAudioCacheSizeMB = Self.normalizedAudioCacheSizeMB(storedAudioCacheSizeMB)
+        audioCacheSizeMB = normalizedAudioCacheSizeMB
+        defaults.set(normalizedAudioCacheSizeMB, forKey: Keys.audioCacheSizeMB)
         appearance = defaults.string(forKey: Keys.appearance).flatMap(AppAppearance.init) ?? .auto
         nowPlayingMode = defaults.string(forKey: Keys.nowPlayingMode).flatMap(NowPlayingMode.init) ?? .immersive
         showLyricsTranslation = defaults.object(forKey: Keys.showTranslation) as? Bool ?? true

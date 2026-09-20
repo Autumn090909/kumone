@@ -175,6 +175,9 @@ final class PlayerService: ObservableObject {
     }
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
+    private var audioResourceLoader: CachingAudioResourceLoader?
+    private var pendingAudioResourceLoader: CachingAudioResourceLoader?
+    private var audioCacheLease: UUID?
     private var statusObservation: NSKeyValueObservation?
     private var itemStatusObservation: NSKeyValueObservation?
     private var resolveGeneration = 0
@@ -559,6 +562,7 @@ final class PlayerService: ObservableObject {
             updateLyricsCursor(at: duration)
             pause()
             engine.replaceCurrentItem(with: nil)
+            releaseCurrentPlaybackResources()
             return
         }
 
@@ -577,6 +581,8 @@ final class PlayerService: ObservableObject {
     // MARK: - Source resolution
 
     private func startPlaying(_ track: Track, indexUnchanged: Bool = false) {
+        pendingAudioResourceLoader?.cancel()
+        pendingAudioResourceLoader = nil
         scrobbleIfNeeded(completed: false)
         currentTrack = track
         progress = 0
@@ -613,6 +619,40 @@ final class PlayerService: ObservableObject {
 
     private func resolveAndLoad(_ track: Track, generation: Int) async {
         let quality = SettingsManager.shared.audioQuality.rawValue
+        let allowsUnblock = SettingsManager.shared.canResolveUnblockedTracks
+        let cacheEnabled = SettingsManager.shared.enableAudioCache
+
+        if cacheEnabled {
+            do {
+                if let cached = try await AudioCache.shared.entry(
+                    for: track.id,
+                    requestedQuality: quality,
+                    allowsUnblock: allowsUnblock
+                ) {
+                    guard generation == resolveGeneration else { return }
+                    let lease = await AudioCache.shared.retain(cached)
+                    guard generation == resolveGeneration else {
+                        releaseAudioCacheLease(lease)
+                        return
+                    }
+                    servedQuality = cached.metadata.servedQuality
+                    if case .unblock(let source) = cached.metadata.source {
+                        unblockSource = source
+                    }
+                    _ = await installResolvedAsset(
+                        AVURLAsset(url: cached.fileURL),
+                        for: track,
+                        generation: generation,
+                        durationMS: nil,
+                        cacheLease: lease
+                    )
+                    return
+                }
+            } catch {
+                print("Audio cache lookup failed: \(error)")
+            }
+        }
+
         var data = try? await NeteaseAPI.songURL(ids: [track.id], level: quality).first
         if data?.url == nil, quality != AudioQuality.standard.rawValue {
             data = try? await NeteaseAPI.songURL(ids: [track.id], level: AudioQuality.standard.rawValue).first
@@ -625,13 +665,19 @@ final class PlayerService: ObservableObject {
         }
 
         // NetEase refused — try third-party sources (UnblockNeteaseMusic-style).
-        if resolvedURL == nil || data?.freeTrialInfo != nil,
-           SettingsManager.shared.canResolveUnblockedTracks {
+        if resolvedURL == nil || data?.freeTrialInfo != nil, allowsUnblock {
             if await resolveAndLoadUnblocked(track, generation: generation) { return }
         }
         guard generation == resolveGeneration else { return }
 
         guard let url = resolvedURL else {
+            if cacheEnabled, await loadFallbackCache(
+                for: track,
+                generation: generation,
+                allowsUnblock: allowsUnblock
+            ) {
+                return
+            }
             handleUnplayable(track)
             return
         }
@@ -692,6 +738,7 @@ final class PlayerService: ObservableObject {
         ToastCenter.shared.show(String(localized: "《\(track.name)》无法播放\(reason.map { "：\($0)" } ?? "")"))
         guard isPlaying else {
             engine.replaceCurrentItem(with: nil)
+            releaseCurrentPlaybackResources()
             return
         }
         if consecutiveFailures < 5 {
@@ -708,17 +755,111 @@ final class PlayerService: ObservableObject {
         generation: Int
     ) async -> ResolvedURLLoadResult {
         consecutiveFailures = 0
+
+        var asset = AVURLAsset(url: url)
+        var resourceLoader: CachingAudioResourceLoader?
+        if SettingsManager.shared.enableAudioCache, !isTrial {
+            let source: AudioCacheSource = unblockSource.map(AudioCacheSource.unblock) ?? .netease
+            do {
+                let loader = try CachingAudioResourceLoader(
+                    remoteURL: url,
+                    trackID: track.id,
+                    requestedQuality: SettingsManager.shared.audioQuality.rawValue,
+                    servedQuality: servedQuality,
+                    source: source,
+                    maximumCacheSizeMB: SettingsManager.shared.audioCacheSizeMB
+                )
+                guard generation == resolveGeneration else {
+                    loader.cancel()
+                    return .superseded
+                }
+                let cachedAsset = AVURLAsset(url: loader.assetURL)
+                loader.attach(to: cachedAsset)
+                pendingAudioResourceLoader = loader
+                resourceLoader = loader
+                asset = cachedAsset
+            } catch {
+                print("Audio source will play without caching: \(error)")
+            }
+        }
+
+        return await installResolvedAsset(
+            asset,
+            for: track,
+            generation: generation,
+            durationMS: durationMS,
+            resourceLoader: resourceLoader
+        )
+    }
+
+    private func loadFallbackCache(
+        for track: Track,
+        generation: Int,
+        allowsUnblock: Bool
+    ) async -> Bool {
+        do {
+            guard let cached = try await AudioCache.shared.fallbackEntry(
+                for: track.id,
+                allowsUnblock: allowsUnblock
+            ) else { return false }
+            guard generation == resolveGeneration else { return true }
+            let lease = await AudioCache.shared.retain(cached)
+            guard generation == resolveGeneration else {
+                releaseAudioCacheLease(lease)
+                return true
+            }
+            servedQuality = cached.metadata.servedQuality
+            if case .unblock(let source) = cached.metadata.source {
+                unblockSource = source
+            }
+            _ = await installResolvedAsset(
+                AVURLAsset(url: cached.fileURL),
+                for: track,
+                generation: generation,
+                durationMS: nil,
+                cacheLease: lease
+            )
+            return true
+        } catch {
+            print("Audio cache fallback lookup failed: \(error)")
+            return false
+        }
+    }
+
+    private func installResolvedAsset(
+        _ asset: AVURLAsset,
+        for track: Track,
+        generation: Int,
+        durationMS: Int?,
+        resourceLoader: CachingAudioResourceLoader? = nil,
+        cacheLease: UUID? = nil
+    ) async -> ResolvedURLLoadResult {
         // Resolve the asset's audio track before the item goes live: an audio mix
         // attached after playback starts is silently ignored, so the spectrum tap
-        // has to be spliced in here or not at all. Sources that refuse byte-range
-        // requests never resolve a track — those play untapped and the UI falls
-        // back to its decorative animation.
-        let asset = AVURLAsset(url: url)
+        // has to be spliced in here or not at all. Unsupported sources and iOS
+        // cache hits play untapped and use the decorative UI fallback.
+        #if os(iOS)
+        // Cached files already have a complete local media source. Keeping their
+        // playback path free of a MediaToolbox processing tap avoids rebuilding
+        // the custom render pipeline on every rapid cache-to-cache switch.
+        let assetTrack = asset.url.isFileURL
+            ? nil
+            : await loadAudioTrack(from: asset, timeout: 2)
+        #else
         let assetTrack = await loadAudioTrack(from: asset, timeout: 2)
-        guard generation == resolveGeneration else { return .superseded }
+        #endif
+        guard generation == resolveGeneration,
+              resourceLoader.map({ pendingAudioResourceLoader === $0 }) ?? true else {
+            resourceLoader?.cancel()
+            if let cacheLease {
+                releaseAudioCacheLease(cacheLease)
+            }
+            return .superseded
+        }
 
         let item = AVPlayerItem(asset: asset)
-        if let assetTrack, let mix = AudioSpectrum.shared.makeAudioMix(for: assetTrack) {
+        if let assetTrack,
+           let mix = AudioSpectrum.shared.makeAudioMix(for: assetTrack) {
             item.audioMix = mix
         } else {
             AudioSpectrum.shared.markUntappable()
@@ -745,7 +886,18 @@ final class PlayerService: ObservableObject {
                 self?.handleItemEnded()
             }
         }
+        let previousResourceLoader = audioResourceLoader
+        let previousCacheLease = audioCacheLease
+        if resourceLoader != nil {
+            pendingAudioResourceLoader = nil
+        }
+        audioResourceLoader = resourceLoader
+        audioCacheLease = cacheLease
         engine.replaceCurrentItem(with: item)
+        previousResourceLoader?.cancel()
+        if let previousCacheLease {
+            releaseAudioCacheLease(previousCacheLease)
+        }
         if isPlaying {
             engine.play()
             scrobbleStartIfNeeded()
@@ -773,6 +925,7 @@ final class PlayerService: ObservableObject {
         currentUnblockSourceID = nil
         unblockSource = nil
         engine.replaceCurrentItem(with: nil)
+        releaseCurrentPlaybackResources()
         AudioSpectrum.shared.beginPreparing()
 
         guard isPlaying else {
@@ -791,6 +944,27 @@ final class PlayerService: ObservableObject {
                 handleUnplayable(track)
                 return
             }
+        }
+    }
+
+    private func releaseAudioCacheLease(_ leaseID: UUID) {
+        Task {
+            do {
+                try await AudioCache.shared.release(leaseID)
+            } catch {
+                print("Audio cache could not release its playback lease: \(error)")
+            }
+        }
+    }
+
+    private func releaseCurrentPlaybackResources() {
+        let resourceLoader = audioResourceLoader
+        let cacheLease = audioCacheLease
+        audioResourceLoader = nil
+        audioCacheLease = nil
+        resourceLoader?.cancel()
+        if let cacheLease {
+            releaseAudioCacheLease(cacheLease)
         }
     }
 

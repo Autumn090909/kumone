@@ -28,11 +28,26 @@ struct SettingsView: View {
                         Text(appearance.displayName).tag(appearance)
                     }
                 }
+                #if os(macOS)
+                // macOS only renders two now-playing layouts — 黑胶 and the
+                // regular page; the iOS 沉浸/简洁 options all fall back to the
+                // regular page here, so offering four was misleading (#105).
+                // Map any non-vinyl value onto 经典模式 so a stored default (e.g.
+                // 沉浸模式) still shows a valid selection.
+                Picker("播放页模式", selection: Binding(
+                    get: { settings.nowPlayingMode == .vinyl ? .vinyl : .classic },
+                    set: { settings.nowPlayingMode = $0 }
+                )) {
+                    Text(NowPlayingMode.vinyl.displayName).tag(NowPlayingMode.vinyl)
+                    Text(NowPlayingMode.classic.displayName).tag(NowPlayingMode.classic)
+                }
+                #else
                 Picker("播放页模式", selection: $settings.nowPlayingMode) {
                     ForEach(NowPlayingMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
                     }
                 }
+                #endif
                 Toggle("显示歌词翻译", isOn: $settings.showLyricsTranslation)
                 Toggle("逐字歌词（卡拉OK）", isOn: $settings.verbatimLyrics)
                 Picker("日文歌词读音", selection: $settings.lyricsAnnotation) {

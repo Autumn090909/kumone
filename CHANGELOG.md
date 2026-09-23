@@ -6,6 +6,13 @@
 section the English bullets come first, followed by their Simplified Chinese
 counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单行。
 
+## 0.3.19 - 2026-09-22
+
+### Fixed / 修复
+
+- **macOS**: the Settings 「播放页模式」 picker now offers only the two layouts macOS actually renders (黑胶 / 经典) instead of four — the iOS 沉浸 / 简洁 options all fell back to the same regular page on macOS. (#105)
+- **macOS**：设置里的「播放页模式」现在只提供 macOS 实际支持的两种(黑胶 / 经典),不再显示四种——iOS 的沉浸 / 简洁在 macOS 上都会回退到同一个常规播放页。（#105）
+
 ## 0.3.18 - 2026-09-16
 
 ### Added / 新增

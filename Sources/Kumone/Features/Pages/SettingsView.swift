@@ -3,7 +3,9 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsManager
     @EnvironmentObject private var account: AccountStore
-    @State private var cacheSize: String = String(localized: "计算中…")
+    @State private var audioCacheUsage: String = String(localized: "计算中…")
+    @State private var imageCacheUsage: String = String(localized: "计算中…")
+    @State private var cacheError: String?
 
     var body: some View {
         Form {
@@ -112,9 +114,68 @@ struct SettingsView: View {
             }
 
             Section("存储") {
-                LabeledContent("图片缓存", value: cacheSize)
-                Button("清除缓存") {
-                    clearCache()
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle(
+                        "歌曲缓存",
+                        isOn: Binding(
+                            get: { settings.enableAudioCache },
+                            set: { enabled in
+                                settings.enableAudioCache = enabled
+                                if enabled {
+                                    Task { await enforceAudioCacheLimit() }
+                                }
+                            }
+                        )
+                    )
+                    Text("关闭后将不读取或缓存歌曲")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if settings.enableAudioCache {
+                        Slider(
+                            value: Binding(
+                                get: { Double(settings.audioCacheSizeMB) },
+                                set: { settings.audioCacheSizeMB = Int($0.rounded()) }
+                            ),
+                            in: Double(SettingsManager.audioCacheSizeRangeMB.lowerBound)...Double(
+                                SettingsManager.audioCacheSizeRangeMB.upperBound
+                            ),
+                            step: Double(SettingsManager.audioCacheSizeStepMB)
+                        )
+                        HStack {
+                            Text("100 MB")
+                            Spacer()
+                            Text("1 GB")
+                        }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("\(audioCacheUsage) / \(audioCacheLimit)")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("清理") {
+                            Task { await clearAudioCache() }
+                        }
+                    }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("图片缓存")
+                    HStack {
+                        HStack(spacing: 4) {
+                            Text("已占用")
+                            Text(imageCacheUsage)
+                        }
+                        .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("清理") {
+                            Task { await clearImageCache() }
+                        }
+                    }
+                }
+                if let cacheError {
+                    Text(cacheError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
             }
 
@@ -156,45 +217,74 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         #if os(macOS)
-        .frame(width: 440, height: 480)
+        .frame(width: 440, height: 600)
         #endif
-        .task { updateCacheSize() }
+        .task {
+            await refreshCacheUsage()
+            await enforceAudioCacheLimit()
+        }
+        #if os(macOS)
+        .onChange(of: settings.audioCacheSizeMB) { _, _ in
+            Task { await enforceAudioCacheLimit() }
+        }
+        #else
+        .onChange(of: settings.audioCacheSizeMB) { _ in
+            Task { await enforceAudioCacheLimit() }
+        }
+        #endif
     }
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
     }
 
-    private var cacheDirectory: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("im.missuo.Kumone/images", isDirectory: true)
+    private var audioCacheLimit: String {
+        ByteCountFormatter.string(
+            fromByteCount: Int64(settings.audioCacheSizeMB) * 1_000_000,
+            countStyle: .file
+        )
     }
 
-    private func updateCacheSize() {
-        let dir = cacheDirectory
-        DispatchQueue.global(qos: .utility).async {
-            let files = (try? FileManager.default.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: [.fileSizeKey]
-            )) ?? []
-            let bytes = files.reduce(0) { sum, url in
-                sum + ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            }
-            let formatted = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-            DispatchQueue.main.async {
-                cacheSize = formatted
-            }
+    private func refreshCacheUsage() async {
+        do {
+            audioCacheUsage = (try await AudioCache.shared.usage()).formatted
+        } catch {
+            cacheError = error.localizedDescription
+        }
+        do {
+            imageCacheUsage = (try await ImageCache.shared.usage()).formatted
+        } catch {
+            cacheError = error.localizedDescription
         }
     }
 
-    private func clearCache() {
-        let dir = cacheDirectory
-        DispatchQueue.global(qos: .utility).async {
-            try? FileManager.default.removeItem(at: dir)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            DispatchQueue.main.async {
-                cacheSize = String(localized: "0 字节")
-                ToastCenter.shared.show(String(localized: "缓存已清除"))
-            }
+    private func enforceAudioCacheLimit() async {
+        guard settings.enableAudioCache else { return }
+        do {
+            try await AudioCache.shared.enforce(maximumSizeMB: settings.audioCacheSizeMB)
+            await refreshCacheUsage()
+        } catch {
+            cacheError = error.localizedDescription
+        }
+    }
+
+    private func clearAudioCache() async {
+        do {
+            try await AudioCache.shared.clear()
+            ToastCenter.shared.show(String(localized: "歌曲缓存已清除"))
+            await refreshCacheUsage()
+        } catch {
+            cacheError = error.localizedDescription
+        }
+    }
+
+    private func clearImageCache() async {
+        do {
+            try await ImageCache.shared.clear()
+            ToastCenter.shared.show(String(localized: "图片缓存已清除"))
+            await refreshCacheUsage()
+        } catch {
+            cacheError = error.localizedDescription
         }
     }
 }

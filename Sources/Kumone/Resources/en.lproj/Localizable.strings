@@ -223,7 +223,10 @@
 "桌面歌词" = "Desktop Lyrics";
 "在屏幕上悬浮显示当前歌词，可拖动调整位置" = "Float the current lyric line on screen; drag to reposition";
 "存储" = "Storage";
+"歌曲缓存" = "Song Cache";
 "图片缓存" = "Image Cache";
+"已占用" = "Used";
+"清理" = "Clear";
 "清除缓存" = "Clear Cache";
 "账号" = "Account";
 "当前账号" = "Signed in as";
@@ -233,6 +236,8 @@
 "计算中…" = "Calculating…";
 "0 字节" = "Zero bytes";
 "缓存已清除" = "Cache cleared";
+"歌曲缓存已清除" = "Song cache cleared";
+"图片缓存已清除" = "Image cache cleared";
 
 /* Errors & toasts */
 "加载失败" = "Failed to Load";

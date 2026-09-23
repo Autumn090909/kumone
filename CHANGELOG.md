@@ -7,6 +7,18 @@
 `---` 分隔，随后是完整的**中文**部分（`### 新增` / `### 修复` / `### 改进`）。英文块与中文块
 的条目一一对应、顺序一致。（0.3.19 起采用此双语分块格式；更早的版本沿用旧的中英交替格式。）
 
+## 0.3.20 - 2026-09-23
+
+### Added
+
+- **macOS** (experimental): AutoMix — an Apple-Music-style continuous-playback mode with beat-matched transitions, optional stem separation, loudness compensation and an output-device picker, on a new dual-deck AVAudioEngine backend. Off by default; turn it on in Settings. Thanks @XerWandeRer (#102).
+
+---
+
+### 新增
+
+- **macOS**（实验性）：AutoMix——类 Apple Music 的连续播放模式,支持节拍对齐的过渡、可选的人声 / 伴奏分离、响度补偿与输出设备选择,基于全新的双 deck AVAudioEngine 后端。默认关闭,可在设置里开启。感谢 @XerWandeRer（#102）。
+
 ## 0.3.19 - 2026-09-23
 
 ### Added

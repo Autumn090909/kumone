@@ -175,6 +175,10 @@ struct SettingsView: View {
             }
 
             Section("存储") {
+                #if os(iOS)
+                // The cross-platform #109 song cache. On macOS the real playback
+                // cache is EngineAudioCache (its own controls below), so these
+                // controls would be inert there — keep them iOS-only.
                 VStack(alignment: .leading, spacing: 6) {
                     Toggle(
                         "歌曲缓存",
@@ -219,6 +223,7 @@ struct SettingsView: View {
                         }
                     }
                 }
+                #endif
                 VStack(alignment: .leading, spacing: 6) {
                     Text("图片缓存")
                     HStack {

@@ -6,6 +6,10 @@ struct SettingsView: View {
     @State private var audioCacheUsage: String = String(localized: "计算中…")
     @State private var imageCacheUsage: String = String(localized: "计算中…")
     @State private var cacheError: String?
+    #if os(macOS)
+    @ObservedObject private var downloader = StemModelDownloader.shared
+    @State private var audioCacheSize: String = String(localized: "计算中…")
+    #endif
 
     var body: some View {
         Form {
@@ -23,6 +27,63 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            #if os(macOS)
+
+            // AutoMix is a group of its own because it is a group of costs:
+            // the master switch buys analysis, and each sub-switch below adds
+            // one specific bill (a seam, extra downloads, the GPU) on top.
+            Section {
+                Toggle("AutoMix", isOn: $settings.automixEnabled)
+                    .onChange(of: settings.automixEnabled) { _, _ in
+                        PlayerService.shared.reconcileQueueOrderAvailability()
+                    }
+                Text("分析已下载的歌曲，自动衔接队列里的歌。所有分析都在本机完成。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("自动过渡", isOn: $settings.automixTransitionsEnabled)
+                    .disabled(!settings.automixEnabled)
+                Text("在两首歌之间做节拍对齐的过渡。只分析本来就要播放的歌曲，不产生额外下载。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("智能顺序", isOn: $settings.automixOrderEnabled)
+                    .disabled(!settings.automixEnabled)
+                    .onChange(of: settings.automixOrderEnabled) { _, _ in
+                        PlayerService.shared.reconcileQueueOrderAvailability()
+                    }
+                Text("按过渡效果重排队列，随机按钮会多出一个 AutoMix 状态。需要额外下载候选歌曲（标准音质）来打分。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("统一歌曲响度", isOn: $settings.loudnessCompensationEnabled)
+                    .disabled(!settings.automixEnabled)
+                Text("按每首歌的母带响度调整播放增益，下一首不会突然变响；需要开启 AutoMix")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                // Stem separation runs on MLX, which is Apple silicon only —
+                // the x86_64 slice of the universal app never offers it.
+                #if arch(arm64)
+                // Off *and* unavailable until the model is on disk: a toggle
+                // that cannot do anything must not look like it can, and the
+                // section below is where it becomes possible.
+                Toggle("增强过渡（人声 / 鼓分离）",
+                       isOn: stemsBinding)
+                    .disabled(!settings.automixEnabled || !stemModelsInstalled)
+                Text("用本机 GPU 分离音轨，过渡更干净。需要下载模型，播放时会占用 GPU 并增加发热和耗电。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                StemModelsSettingsSection()
+                #endif
+            } header: {
+                Text("AutoMix")
+            } footer: {
+                Text("对古典、现场录音、有声书等内容效果不佳，遇到这类歌单可在这里暂时关闭。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            #endif
 
             if settings.enableUnblock {
                 Section {
@@ -177,6 +238,25 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
+                #if os(macOS)
+                LabeledContent("歌曲缓存", value: audioCacheSize)
+                Picker("歌曲缓存上限", selection: $settings.audioCacheLimit) {
+                    Text("512 MB").tag(Int64(512) << 20)
+                    Text("2 GB").tag(Int64(2) << 30)
+                    Text("8 GB").tag(Int64(8) << 30)
+                    Text("不限").tag(Int64(0))
+                }
+                .onChange(of: settings.audioCacheLimit) { _, _ in
+                    updateAudioCacheSize()
+                }
+                Button("清除歌曲缓存") {
+                    Task {
+                        await EngineAudioCache.shared.removeAll()
+                        updateAudioCacheSize()
+                        ToastCenter.shared.show(String(localized: "歌曲缓存已清除"))
+                    }
+                }
+                #endif
             }
 
             Section("账号") {
@@ -222,6 +302,9 @@ struct SettingsView: View {
         .task {
             await refreshCacheUsage()
             await enforceAudioCacheLimit()
+            #if os(macOS)
+            updateAudioCacheSize()
+            #endif
         }
         #if os(macOS)
         .onChange(of: settings.audioCacheSizeMB) { _, _ in
@@ -233,6 +316,30 @@ struct SettingsView: View {
         }
         #endif
     }
+    #if os(macOS)
+
+    /// Whether the two-stem model is on disk, read from the downloader so the
+    /// toggle flips the moment a download lands (the launcher wires the
+    /// separator in via `onInstalled`; `StemSeparation.isAvailable` is not
+    /// observable and only says what was installed at launch).
+    private var stemModelsInstalled: Bool { downloader.vocalsInstalled }
+
+    /// Reads as off whenever the models are missing, however the stored
+    /// setting stands: the toggle must never claim a capability the machine
+    /// does not have. The stored value is left alone so turning it on once and
+    /// installing the models later still works.
+    private var stemsBinding: Binding<Bool> {
+        Binding(get: { settings.automixStemsEnabled && stemModelsInstalled },
+                set: { settings.automixStemsEnabled = $0 })
+    }
+
+    private func updateAudioCacheSize() {
+        Task {
+            let bytes = await EngineAudioCache.shared.totalUsageBytes()
+            audioCacheSize = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        }
+    }
+    #endif
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"

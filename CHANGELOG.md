@@ -8,10 +8,19 @@ counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单
 
 ## 0.3.19 - 2026-09-22
 
+### Added / 新增
+
+- **iOS + macOS**: per-source control for grey (unavailable) tracks — enable or disable each fallback audio source (酷狗 / 酷我 / …) in Settings, plus stricter title/artist/duration match validation so a wrong song is no longer substituted. Thanks @yamakze (#104, addresses #77).
+- **iOS + macOS**：灰色(无版权)歌曲的音源可逐个开关——在设置里启用/禁用每个备用音源(酷狗 / 酷我 / …),并加入更严格的标题/歌手/时长匹配校验,不再匹配到错误的歌曲。感谢 @yamakze（#104，缓解 #77）。
+
 ### Fixed / 修复
 
 - **macOS**: the Settings 「播放页模式」 picker now offers only the two layouts macOS actually renders (黑胶 / 经典) instead of four — the iOS 沉浸 / 简洁 options all fell back to the same regular page on macOS. (#105)
 - **macOS**：设置里的「播放页模式」现在只提供 macOS 实际支持的两种(黑胶 / 经典),不再显示四种——iOS 的沉浸 / 简洁在 macOS 上都会回退到同一个常规播放页。（#105）
+- **macOS**: the now-playing page slides in more smoothly — the titlebar and ambient tint fade out as the page rises (instead of snapping away), the arrow cursor no longer leaks from the sidebar divider onto the page, and the artwork cross-fades in. Thanks @sld272 (#100).
+- **macOS**：进入播放页的动画更顺滑——标题栏与环境色随页面升起淡出(不再突然消失),侧栏分隔条的箭头光标不再渗到播放页上,封面淡入。感谢 @sld272（#100）。
+- **iOS**: tapping a track's cover in a list now plays it directly instead of opening the album (more tap area when the artist row is long), and the now-playing volume control moved into a compact popover. Thanks @yamakze (#108, part of #106).
+- **iOS**：列表里点击歌曲封面现在直接播放,而不是进入专辑(歌手名很长时可点区域太少),播放页音量改为紧凑的弹出条。感谢 @yamakze（#108，#106 的一部分）。
 
 ## 0.3.18 - 2026-09-16
 

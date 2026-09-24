@@ -74,24 +74,30 @@ final class CustomAudioSourceStore: ObservableObject {
         let metadata = LXScriptMetadata.parse(from: trimmed)
         let name = metadata.name ?? fallbackName
 
-        var imported = CustomAudioSource(
-            id: UUID().uuidString,
+        // Re-importing the same script body must keep the existing identity (and
+        // the user's enable choice) instead of leaving a stale duplicate.
+        // `CustomAudioSource.id` is a `let` — it *is* the persistence key and the
+        // `custom:<key>` half of the source ID — so it has to be chosen here at
+        // construction time rather than assigned afterwards.
+        let existingIndex = sources.firstIndex(where: { $0.script == trimmed })
+
+        let imported = CustomAudioSource(
+            id: existingIndex.map { sources[$0].id } ?? UUID().uuidString,
             name: name,
             author: metadata.author,
             version: metadata.version,
             homepage: metadata.homepage,
             summary: metadata.summary,
-            script: trimmed
+            script: trimmed,
+            importedAt: existingIndex.map { sources[$0].importedAt } ?? Date(),
+            isEnabled: existingIndex.map { sources[$0].isEnabled } ?? true,
+            declaredQualityLabels: existingIndex.map { sources[$0].declaredQualityLabels } ?? []
         )
 
-        if let index = sources.firstIndex(where: { $0.script == trimmed }) {
-            // Same script body: keep the identity (and the enable state), refresh
-            // the metadata in case the header changed.
-            imported.id = sources[index].id
-            imported.importedAt = sources[index].importedAt
-            imported.isEnabled = sources[index].isEnabled
-            imported.declaredQualityLabels = sources[index].declaredQualityLabels
-            runtimes[sources[index].id] = nil
+        if let index = existingIndex {
+            // The JS context belongs to the old text; drop it so the next init
+            // picks up the refreshed script.
+            runtimes[imported.id] = nil
             sources[index] = imported
         } else {
             sources.append(imported)

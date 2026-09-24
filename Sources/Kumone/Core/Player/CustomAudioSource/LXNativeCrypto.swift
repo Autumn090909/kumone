@@ -276,8 +276,12 @@ enum LXCrypto {
                 guard let source = raw.bindMemory(to: UInt8.self).baseAddress else { return 0 }
                 switch operation {
                 case .decode:
+                    // 两个函数的签名是同构的：(dst, dstSize, src, srcSize, …)，
+                    // 解码同样要吃「可变的目标 + 只读的源」。
+                    // 这里曾经把 source / output 写反 —— 编译器会在 `source`
+                    // 那一列报 UnsafePointer → UnsafeMutablePointer。
                     return compression_decode_buffer(
-                        source, data.count, &output, capacity, nil, COMPRESSION_ZLIB
+                        &output, capacity, source, data.count, nil, COMPRESSION_ZLIB
                     )
                 case .encode:
                     return compression_encode_buffer(

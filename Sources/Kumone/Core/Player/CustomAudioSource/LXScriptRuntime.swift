@@ -463,8 +463,8 @@ final class LXScriptRuntime {
                 guard let self else { return }
                 self.settleAction(
                     id: Int(id),
-                    error: (error?.isEmpty ?? true) ? nil : error,
-                    encoded: encoded
+                    error: Self.bridgeText(error),
+                    encoded: Self.bridgeText(encoded)
                 )
             }
         }
@@ -505,6 +505,23 @@ final class LXScriptRuntime {
         return Data(base64Encoded: value, options: [.ignoreUnknownCharacters])
     }
 
+    /// Reads a `String?` parameter that JavaScript handed across the block
+    /// boundary.
+    ///
+    /// JavaScriptCore does **not** bridge the JavaScript `null` it is given to
+    /// Swift's `nil`: it arrives as the four-character string `"null"`. A
+    /// successful `actionSettled(id, null, encoded)` would therefore be read as
+    /// a failure whose message is literally `null`, which is exactly what the
+    /// runtime tests caught. Normalising here — rather than only on the JS side
+    /// — keeps the bridge honest no matter which of `null` / `undefined` / `''`
+    /// a script's promise chain happens to hand us.
+    nonisolated private static func bridgeText(_ value: String?) -> String? {
+        guard let value, !value.isEmpty, value != "null", value != "undefined" else {
+            return nil
+        }
+        return value
+    }
+
     // MARK: - Inbound events
 
     private func handleEmit(_ event: String, payload: String) {
@@ -540,7 +557,15 @@ final class LXScriptRuntime {
                 name: value["name"] as? String ?? "",
                 type: value["type"] as? String ?? "music",
                 actions: value["actions"] as? [String] ?? [],
-                qualities: value["qualities"] as? [String] ?? []
+                // LX's published field name is `qualitys` — the missing "i" is
+                // part of the API, not a typo on our side, and every real script
+                // emits it that way. `qualities` is accepted as well because a
+                // fair number of hand-written sources "correct" the spelling;
+                // reading only one of the two silently produces an empty
+                // quality list, which leaves every request asking for `null`.
+                qualities: value["qualitys"] as? [String]
+                    ?? value["qualities"] as? [String]
+                    ?? []
             )
         }
         .sorted { $0.key < $1.key }

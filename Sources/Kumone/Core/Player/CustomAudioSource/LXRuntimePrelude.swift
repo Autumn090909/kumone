@@ -756,10 +756,14 @@ enum LXRuntimePrelude {
             } catch (error) {
               encoded = JSON.stringify(String(value))
             }
-            native.actionSettled(requestID, null, encoded)
+            // Empty string, not `null`, for "no error": JavaScriptCore hands a
+            // JavaScript `null` to a Swift `String?` as the literal text
+            // "null", which the host would read as a failure message. The host
+            // normalises both forms, and this keeps the intent legible here.
+            native.actionSettled(requestID, '', encoded)
           },
           function (error) {
-            native.actionSettled(requestID, describeError(error), null)
+            native.actionSettled(requestID, describeError(error), '')
           }
         )
       }

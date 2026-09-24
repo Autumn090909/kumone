@@ -102,7 +102,7 @@ enum LXCrypto {
                             options,
                             keyPointer, key.count, nil,
                             dataPointer, data.count,
-                            outputPointer, output.count, &moved
+                            outputPointer, outputRaw.count, &moved
                         )
                     }
                     return iv.withUnsafeBytes { ivRaw in
@@ -113,7 +113,7 @@ enum LXCrypto {
                             keyPointer, key.count,
                             ivRaw.bindMemory(to: UInt8.self).baseAddress,
                             dataPointer, data.count,
-                            outputPointer, output.count, &moved
+                            outputPointer, outputRaw.count, &moved
                         )
                     }
                 }

@@ -199,7 +199,9 @@ final class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(enableUnblock, forKey: Keys.unblock) }
     }
 
-    /// Built-in third-party sources eligible for gray-track resolution.
+    /// Sources eligible for gray-track resolution: the built-in three plus one
+    /// `custom:<scriptKey>` entry per imported LX script (see
+    /// `CustomAudioSourceStore`).
     @Published var enabledAudioSourceIDs: Set<AudioSourceID> {
         didSet {
             UserDefaults.standard.set(
@@ -330,9 +332,12 @@ final class SettingsManager: ObservableObject {
         verbatimLyrics = defaults.object(forKey: Keys.verbatimLyrics) as? Bool ?? true
         enableUnblock = defaults.object(forKey: Keys.unblock) as? Bool ?? true
         if let rawSourceIDs = defaults.stringArray(forKey: Keys.unblockSources) {
-            enabledAudioSourceIDs = Set(rawSourceIDs.compactMap(AudioSourceID.init))
+            // `rawValue` is the persisted identity, so IDs for imported custom
+            // sources survive the round trip too — and an ID whose script has
+            // since been deleted simply resolves to no provider.
+            enabledAudioSourceIDs = Set(rawSourceIDs.map { AudioSourceID(rawValue: $0) })
         } else {
-            enabledAudioSourceIDs = Set(AudioSourceID.allCases)
+            enabledAudioSourceIDs = Set(AudioSourceID.builtIn)
         }
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false

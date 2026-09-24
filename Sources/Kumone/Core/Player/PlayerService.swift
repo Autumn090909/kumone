@@ -925,7 +925,8 @@ final class PlayerService: ObservableObject {
             let resolution = await UnblockService.resolve(
                 track,
                 enabledSources: SettingsManager.shared.enabledAudioSourceIDs,
-                excluding: []
+                excluding: [],
+                customProviders: CustomAudioSourceStore.shared.enabledProviders()
             )
             if let unblocked = resolution.source {
                 url = unblocked.url

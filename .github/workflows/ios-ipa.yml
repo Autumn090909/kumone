@@ -1,0 +1,260 @@
+name: iOS IPA
+
+# Builds an UNSIGNED .ipa on demand.
+#
+# Unsigned is deliberate. The artifact is not meant to be installed as-is: a
+# sideloading tool (AltStore / Sideloadly / ESign / TrollStore) re-signs it with
+# a certificate that belongs to the person installing it. That is the only way
+# to run a build the project's own Apple team never signed — and it is also why
+# this workflow needs no signing secrets at all.
+#
+# Why a workflow instead of a local build: Kumone is swift-tools-version 6.2, so
+# it needs the Swift 6.2 toolchain, which ships with Xcode 26, which requires
+# macOS 15.6 or newer. Older macOS cannot build this project at all. Running the
+# build here means a contributor on any OS can still produce an installable IPA.
+#
+# HOW TO TRIGGER IT IN A FORK
+#
+#   Two ways in, deliberately, because the obvious one has a trap:
+#
+#   1. Push-triggered — works from ANY branch, including a fresh one.
+#      Pushing commits touching Sources/, Tests/ or this file starts a run.
+#      This is the reliable route: nothing has to be merged first.
+#
+#   2. Manual — Actions ▸ iOS IPA ▸ "Run workflow".
+#      TRAP: `workflow_dispatch` only offers the button once this file exists
+#      on the DEFAULT branch. If you pushed your changes to a feature branch
+#      and see no "Run workflow" button, that is why — either use route 1, or
+#      land this file on the default branch first.
+#
+#   Also required in a fork: Actions are disabled by default. Open the Actions
+#   tab once and click the "I understand my workflows, go ahead and enable them"
+#   button, or no run starts at all.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version baked into the IPA (CFBundleShortVersionString)"
+        required: false
+        default: "0.3.20-custom"
+      run_tests:
+        description: "Compile and run the custom-source tests first (fast; never blocks the IPA)"
+        type: boolean
+        required: false
+        default: true
+
+  # Route 1 above. Path-filtered so an unrelated push (a README tweak, an
+  # upstream merge) does not kick off a 20-minute macOS build.
+  push:
+    branches: ["**"]
+    paths:
+      - "Sources/**"
+      - "Tests/**"
+      - "ios/**"
+      - ".github/workflows/ios-ipa.yml"
+
+permissions:
+  contents: read
+
+# One build per ref. A second push while a build is running cancels the first —
+# which is usually what you want when iterating on a compile error.
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Naming for the human-facing artifact (the .ipa filename, matching the one
+  # upstream's release.yml publishes: Kumone-iOS-<version>.ipa).
+  APP_NAME: Kumone
+
+  # The XcodeGen target/product name — deliberately NOT the same as APP_NAME.
+  # ios/project.yml declares a target called `KumoneIOS`, and
+  # ios/Config/Shared.xcconfig sets `PRODUCT_NAME = KumoneIOS`, so the built
+  # bundle is KumoneIOS.app. The Home Screen label only *reads* "Kumone"
+  # because of INFOPLIST_KEY_CFBundleDisplayName. Looking for Kumone.app fails
+  # at packaging — i.e. after the entire build has already succeeded.
+  IOS_SCHEME: KumoneIOS
+  IOS_APP_NAME: KumoneIOS
+
+  # Used when the run came from a push (no `inputs`), or when the caller left
+  # the field blank.
+  DEFAULT_VERSION: "0.3.20-custom"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Compile + test, narrowly.
+  #
+  # This deliberately does NOT run a bare `swift build` / `swift test`. Those
+  # build every target in the package, which drags in mlx-swift (StemKit, the
+  # macOS-only AutoMix stem separation) — several minutes of C++/Metal for code
+  # that has nothing to do with the iOS app or with the custom audio sources.
+  #
+  # Everything this change adds lives in the KumoneCore target, so building that
+  # target and running KumoneCoreTests is the whole signal, in a fraction of the
+  # time. A red result here is visible in the run, but it never blocks the IPA
+  # job — the IPA is the point of this workflow.
+  # ---------------------------------------------------------------------------
+  verify:
+    if: ${{ github.event_name == 'push' || inputs.run_tests }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcode-select -p
+          xcodebuild -version
+          swift --version
+          # Fail loudly and early rather than 20 minutes into a compile: the
+          # package header demands Swift 6.2, which only Xcode 26 ships.
+          XCODE_MAJOR="$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)"
+          if [ "${XCODE_MAJOR:-0}" -lt 26 ]; then
+            echo "::error::Xcode $XCODE_MAJOR is too old; the package needs Swift 6.2 (Xcode 26+)."
+            exit 1
+          fi
+
+      - name: Build KumoneCore
+        run: |
+          set -euo pipefail
+          swift build --target KumoneCore
+
+      - name: Custom-source tests
+        run: |
+          set -euo pipefail
+          # Compile only the test target we care about, then run it without
+          # rebuilding — this is what keeps StemKitTests (and therefore
+          # mlx-swift) out of the critical path.
+          if swift build --build-tests --target KumoneCoreTests; then
+            swift test --skip-build --filter LXCustomSource
+          else
+            echo "::warning::Targeted test build unavailable; falling back to full 'swift test'."
+            swift test --filter LXCustomSource
+          fi
+
+  # ---------------------------------------------------------------------------
+  # The deliverable.
+  # ---------------------------------------------------------------------------
+  ipa:
+    needs: [verify]
+    # Runs even when `verify` was skipped (run_tests = false) or failed: a red
+    # verify job is visible in the same run, so nothing is hidden by continuing.
+    if: ${{ always() && !cancelled() }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcode-select -p
+          xcodebuild -version
+          swift --version
+
+      - name: Resolve version
+        id: v
+        env:
+          IN_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # DEFAULT_VERSION is a workflow-level env var, so it is already in this
+          # step's environment. On a push-triggered run there is no `inputs` at
+          # all, and this is what fills the gap.
+          V="${IN_VERSION:-${DEFAULT_VERSION:-0.3.20-custom}}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Building version: $V"
+
+      # Leaves the project in its default, CarPlay-free configuration. Cheap and
+      # explicit: it guarantees no stray capability overlay is in play, and
+      # CarPlay's entitlement is restricted, so an unsigned build must not carry
+      # it anyway. `bash <script>` rather than `./<script>` so a lost exec bit
+      # cannot break the run.
+      - name: Configure iOS build
+        run: |
+          set -euo pipefail
+          bash Scripts/configure-ios.sh
+
+      - name: Build unsigned iOS app
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          SCHEME: ${{ env.IOS_SCHEME }}
+        run: |
+          set -euo pipefail
+          xcodebuild -workspace ios/KumoneIOS.xcworkspace -scheme "$SCHEME" \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/ios-dd" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$(git rev-list --count HEAD)" \
+            build
+
+      - name: Package into an .ipa
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          IOS_APP: ${{ env.IOS_APP_NAME }}
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/ios-dd/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/$IOS_APP.app"
+
+          # Belt and braces. The expected name is known and asserted first, but
+          # if it ever drifts (a rename in project.yml / Shared.xcconfig) this
+          # falls back to whatever .app was actually produced instead of dying
+          # 20 minutes in. A listing is printed on failure so the cause is
+          # obvious from the log alone.
+          if [ ! -d "$APP" ]; then
+            echo "::warning::$IOS_APP.app not found; falling back to discovery."
+            echo "--- $PRODUCTS ---"
+            ls -la "$PRODUCTS" || true
+            APP="$(find "$PRODUCTS" -maxdepth 1 -name '*.app' -print -quit)"
+          fi
+          test -n "$APP" && test -d "$APP" || {
+            echo "::error::No .app bundle found under $PRODUCTS"
+            exit 1
+          }
+          echo "Packaging: $APP"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" || true
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist" || true
+
+          mkdir -p "$RUNNER_TEMP/payload/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/payload/Payload/"
+
+          # An .ipa is nothing more than a zip of Payload/<App>.app, so the
+          # packaging step is `zip` — no exportArchive, because that would
+          # require the signing identity this build deliberately does not have.
+          OUT="$APP_NAME-iOS-$VERSION.ipa"
+          (cd "$RUNNER_TEMP/payload" && zip -qry "$GITHUB_WORKSPACE/$OUT" Payload)
+
+          shasum -a 256 "$OUT" | tee "$OUT.sha256"
+
+          # So a downloaded IPA can always be traced back to what produced it.
+          {
+            echo "app:      $APP_NAME"
+            echo "bundle:   $(basename "$APP")"
+            echo "bundle-id: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2>/dev/null || echo '?')"
+            echo "version:  $VERSION"
+            echo "commit:   $(git rev-parse HEAD)"
+            echo "branch:   $GITHUB_REF_NAME"
+            echo "xcode:    $(xcodebuild -version | head -1)"
+            echo "swift:    $(swift --version | head -1)"
+            echo "runner:   ${ImageOS:-?} ${ImageVersion:-?}"
+            echo "built-at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$APP_NAME-iOS-$VERSION.BUILD-INFO.txt"
+
+          echo "IPA: $OUT ($(du -h "$OUT" | cut -f1))"
+          cat "$APP_NAME-iOS-$VERSION.BUILD-INFO.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-iOS-${{ steps.v.outputs.version }}
+          path: |
+            ${{ env.APP_NAME }}-iOS-${{ steps.v.outputs.version }}.ipa
+            ${{ env.APP_NAME }}-iOS-${{ steps.v.outputs.version }}.ipa.sha256
+            ${{ env.APP_NAME }}-iOS-${{ steps.v.outputs.version }}.BUILD-INFO.txt
+          if-no-files-found: error
+          retention-days: 30

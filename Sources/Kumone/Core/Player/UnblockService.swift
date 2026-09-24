@@ -2,7 +2,8 @@ import Foundation
 import os.log
 
 /// Resolves gray tracks from the direct pyncmd source, then built-in search
-/// providers when pyncmd cannot serve the original NetEase song ID.
+/// providers when pyncmd cannot serve the original NetEase song ID, then any
+/// imported LX custom sources the user switched on.
 enum UnblockService {
     private static let log = Logger(subsystem: "im.missuo.kumone", category: "audio-source")
     private static let httpClient = AudioSourceClient.shared
@@ -16,10 +17,15 @@ enum UnblockService {
         let attemptedSources: Set<AudioSourceID>
     }
 
+    /// Custom sources are passed in rather than looked up here so this stays a
+    /// pure function of its inputs — and so the JS-backed providers, which are
+    /// main-actor bound, are only ever constructed by a caller that is already
+    /// there.
     static func resolve(
         _ track: Track,
         enabledSources: Set<AudioSourceID>,
-        excluding attemptedSources: Set<AudioSourceID>
+        excluding attemptedSources: Set<AudioSourceID>,
+        customProviders: [LXAudioSourceProvider] = []
     ) async -> Resolution {
         var newlyAttemptedSources = Set<AudioSourceID>()
         if enabledSources.contains(.pyncmd), !attemptedSources.contains(.pyncmd) {
@@ -34,7 +40,12 @@ enum UnblockService {
             }
         }
 
-        for provider in fallbackProviders where enabledSources.contains(provider.id)
+        // Built-ins first: they are the shipped, best-tested path. Imported
+        // scripts run after them, in the order the user arranged.
+        let ordered: [any AudioSourceProvider] =
+            fallbackProviders + customProviders.map { $0 as any AudioSourceProvider }
+
+        for provider in ordered where enabledSources.contains(provider.id)
             && !attemptedSources.contains(provider.id) {
             newlyAttemptedSources.insert(provider.id)
             do {

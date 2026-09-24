@@ -87,7 +87,7 @@ struct SettingsView: View {
 
             if settings.enableUnblock {
                 Section {
-                    ForEach(AudioSourceID.allCases, id: \.self) { source in
+                    ForEach(AudioSourceID.builtIn, id: \.self) { source in
                         Toggle(source.displayName, isOn: Binding(
                             get: { settings.enabledAudioSourceIDs.contains(source) },
                             set: { isEnabled in
@@ -100,8 +100,13 @@ struct SettingsView: View {
                         ))
                     }
                 } header: {
-                    Text("音源")
+                    Text("内置音源")
                 }
+
+                // Imported LX scripts live in their own section because they are
+                // user-supplied code, not a shipped option: they can be added,
+                // reordered and removed.
+                CustomAudioSourceSettingsSection(store: .shared)
             }
 
             Section("外观") {

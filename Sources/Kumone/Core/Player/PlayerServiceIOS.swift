@@ -698,6 +698,7 @@ final class PlayerService: ObservableObject {
     ) async -> Bool {
         let enabledSources = SettingsManager.shared.enabledAudioSourceIDs
         guard !enabledSources.isEmpty else { return false }
+        let customProviders = CustomAudioSourceStore.shared.enabledProviders()
 
         guard generation == resolveGeneration,
               !requiresActivePlayback || isPlaying
@@ -706,7 +707,8 @@ final class PlayerService: ObservableObject {
         let resolution = await UnblockService.resolve(
             track,
             enabledSources: enabledSources,
-            excluding: attemptedUnblockSources
+            excluding: attemptedUnblockSources,
+            customProviders: customProviders
         )
         attemptedUnblockSources.formUnion(resolution.attemptedSources)
         guard let unblocked = resolution.source else { return false }

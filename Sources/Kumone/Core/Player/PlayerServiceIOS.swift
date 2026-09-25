@@ -741,7 +741,9 @@ final class PlayerService: ObservableObject {
         )
         guard case .loaded = loadResult else { return false }
 
-        ToastCenter.shared.show(String(localized: "已使用第三方音源：\(unblocked.displayName)"))
+        // No toast here on purpose. A third-party source is the *normal* way a
+        // track gets served, so announcing it on every track change was noise.
+        // `unblockSource` still carries the name for the UI to show quietly.
         return true
     }
 
@@ -1018,7 +1020,7 @@ final class PlayerService: ObservableObject {
     }
 
     private func loadLyrics(for track: Track, generation: Int) async {
-        let response = try? await NeteaseAPI.lyric(id: track.id)
+        let response = await LyricsSource.fetch(for: track)
         guard generation == resolveGeneration else { return }
         lyrics = response.map(LyricsParser.parse)
         updateLyricsCursor(at: progress)
@@ -1026,8 +1028,12 @@ final class PlayerService: ObservableObject {
 
     // MARK: - Scrobble
 
+    /// Both halves write to the NetEase listening history keyed by song id, so
+    /// a QQ track is never reported at all: the two catalogs number their songs
+    /// independently, and the id would land on whichever *NetEase* song owns
+    /// that number (see `TrackPlatform.isAccountBound`).
     private func scrobbleStartIfNeeded() {
-        guard let track = currentTrack, !startScrobbled else { return }
+        guard let track = currentTrack, !startScrobbled, track.isAccountBound else { return }
         startScrobbled = true
         let trackID = track.id
         let sourceID = source.sourceID
@@ -1037,7 +1043,8 @@ final class PlayerService: ObservableObject {
     }
 
     private func scrobbleIfNeeded(completed: Bool) {
-        guard let track = currentTrack, !scrobbled, progress > 1 else { return }
+        guard let track = currentTrack, !scrobbled, progress > 1, track.isAccountBound
+        else { return }
         scrobbled = true
         let seconds = completed ? Int(duration) : Int(progress)
         let sourceID = source.sourceID

@@ -81,6 +81,18 @@ final class AccountStore: ObservableObject {
         NowPlayingManager.shared.refreshLikeState()
     }
 
+    /// Liking is a NetEase-account call keyed by song id, and the two catalogs
+    /// number their songs independently — so a QQ track is refused here rather
+    /// than liking whichever *NetEase* song happens to share its id (see
+    /// `TrackPlatform.isAccountBound`).
+    func toggleLike(track: Track) async {
+        guard track.isAccountBound else {
+            ToastCenter.shared.show(String(localized: "QQ 音乐的歌曲暂不支持加入「我喜欢」"))
+            return
+        }
+        await toggleLike(trackID: track.id)
+    }
+
     func logout() async {
         await NeteaseAPI.logout()
         profile = nil

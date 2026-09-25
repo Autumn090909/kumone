@@ -164,6 +164,8 @@ struct AlbumSummary: Decodable, Hashable, Identifiable {
         subType = try? c.decode(String.self, forKey: .subType)
         alias = (try? c.decode([String].self, forKey: .alia))
             ?? (try? c.decode([String].self, forKey: .alias)) ?? []
+        mid = (try? c.decode(String.self, forKey: .mid))
+            ?? (try? c.decode(String.self, forKey: .albumMID))
     }
 
     var publishYear: String {
@@ -216,9 +218,13 @@ struct ArtistSummary: Decodable, Hashable, Identifiable {
     let briefDesc: String?
     let alias: [String]
     let followed: Bool
+    /// QQ addresses an artist by a string `singerMID`, which the numeric id
+    /// above cannot express. `nil` for NetEase.
+    let mid: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, name, picUrl, img1v1Url, cover, avatar, albumSize, musicSize, briefDesc, alias, followed
+        case mid, singerMID
     }
 
     init(from decoder: Decoder) throws {
@@ -234,6 +240,8 @@ struct ArtistSummary: Decodable, Hashable, Identifiable {
         briefDesc = try? c.decode(String.self, forKey: .briefDesc)
         alias = (try? c.decode([String].self, forKey: .alias)) ?? []
         followed = (try? c.decode(Bool.self, forKey: .followed)) ?? false
+        mid = (try? c.decode(String.self, forKey: .mid))
+            ?? (try? c.decode(String.self, forKey: .singerMID))
     }
 }
 

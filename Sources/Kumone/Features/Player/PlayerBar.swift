@@ -47,7 +47,7 @@ struct PlayerBar: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if let track = player.currentTrack {
-                LikeButton(trackID: track.id)
+                LikeButton(trackID: track.id, isAccountBound: track.isAccountBound)
             }
         }
     }
@@ -329,19 +329,26 @@ struct PlayerIconButton: View {
 
 struct LikeButton: View {
     let trackID: Int
+    /// Mirrors `Track.isAccountBound`. Defaults to `true` so call sites that
+    /// predate the QQ catalog keep their behaviour; a QQ track passes `false`
+    /// and the button disappears, because liking is a NetEase-account write
+    /// keyed by song id (see `TrackPlatform.isAccountBound`).
+    var isAccountBound: Bool = true
     var size: CGFloat = 13
 
     @EnvironmentObject private var account: AccountStore
 
     var body: some View {
-        let liked = account.isLiked(trackID)
-        PlayerIconButton(
-            icon: liked ? "heart.fill" : "heart", size: size,
-            isActive: liked
-        ) {
-            Task { await account.toggleLike(trackID: trackID) }
+        if isAccountBound {
+            let liked = account.isLiked(trackID)
+            PlayerIconButton(
+                icon: liked ? "heart.fill" : "heart", size: size,
+                isActive: liked
+            ) {
+                Task { await account.toggleLike(trackID: trackID) }
+            }
+            .help(liked ? String(localized: "取消喜欢") : String(localized: "喜欢"))
         }
-        .help(liked ? String(localized: "取消喜欢") : String(localized: "喜欢"))
     }
 }
 

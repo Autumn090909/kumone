@@ -117,7 +117,10 @@ public final class CarPlayConnector: NSObject {
             .removeDuplicates(by: { $0?.id == $1?.id })
             .sink { [weak self] track in
                 guard let self else { return }
-                let liked = track.map { AccountStore.shared.isLiked($0.id) } ?? false
+                // A QQ track has no NetEase liked state; matching its id against
+                // the NetEase list would light the heart up for the wrong song
+                // (see TrackPlatform.isAccountBound).
+                let liked = track.map { $0.isAccountBound && AccountStore.shared.isLiked($0.id) } ?? false
                 self.likeButton?.isSelected = liked
             }
             .store(in: &cancellables)
@@ -127,7 +130,8 @@ public final class CarPlayConnector: NSObject {
             .sink { [weak self] _ in
                 guard let self,
                       let track = PlayerService.shared.currentTrack else { return }
-                self.likeButton?.isSelected = AccountStore.shared.isLiked(track.id)
+                self.likeButton?.isSelected = track.isAccountBound
+                    && AccountStore.shared.isLiked(track.id)
             }
             .store(in: &cancellables)
 
@@ -206,13 +210,15 @@ public final class CarPlayConnector: NSObject {
         nowPlaying.add(self)
 
         // "Like" button — uses the system's "add to library" styled button.
+        // The `track:` overload refuses a QQ track rather than writing its id
+        // to the NetEase account (see TrackPlatform.isAccountBound).
         let like = CPNowPlayingAddToLibraryButton(handler: { _ in
-            guard let trackID = PlayerService.shared.currentTrack?.id else { return }
-            Task { await AccountStore.shared.toggleLike(trackID: trackID) }
+            guard let track = PlayerService.shared.currentTrack else { return }
+            Task { await AccountStore.shared.toggleLike(track: track) }
         })
         like.isEnabled = true
         like.isSelected = PlayerService.shared.currentTrack
-            .map { AccountStore.shared.isLiked($0.id) } ?? false
+            .map { $0.isAccountBound && AccountStore.shared.isLiked($0.id) } ?? false
         self.likeButton = like
 
         // "Dislike" button — custom SF Symbol icon, only shown and enabled while FM mode is on.
@@ -295,6 +301,11 @@ public final class CarPlayConnector: NSObject {
     /// album (cloud-disk uploads and some FM tracks decode with `album.id == 0`).
     private func showAlbumOrArtistOfCurrentTrack() {
         guard let track = PlayerService.shared.currentTrack else { return }
+        // Both branches below are NetEase lookups keyed by id, and the two
+        // catalogs number their albums and artists independently — a QQ track
+        // would open some unrelated album. CarPlay has no QQ catalog browser of
+        // its own, so there is simply nothing to open.
+        guard track.isAccountBound else { return }
 
         if track.album.id > 0 {
             pushTracks(

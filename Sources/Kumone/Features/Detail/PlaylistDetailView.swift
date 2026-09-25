@@ -3,6 +3,12 @@ import SwiftUI
 @MainActor
 final class PlaylistDetailViewModel: ObservableObject {
     let playlistID: Int
+    /// Which catalog to read from. Defaulted so every existing call site keeps
+    /// compiling and keeps meaning NetEase.
+    let platform: TrackPlatform
+    /// QQ addresses a playlist by its string `dissid`, which the numeric id
+    /// above cannot express.
+    let qqDissID: String?
     @Published var detail: PlaylistDetail?
     @Published var tracks: [Track] = []
     @Published var privileges: [Int: TrackPrivilege] = [:]
@@ -12,8 +18,10 @@ final class PlaylistDetailViewModel: ObservableObject {
     @Published var filter = ""
     private var reducedRecommendationIDs: Set<Int> = []
 
-    init(playlistID: Int) {
+    init(playlistID: Int, platform: TrackPlatform = .netease, qqDissID: String? = nil) {
         self.playlistID = playlistID
+        self.platform = platform
+        self.qqDissID = qqDissID
     }
 
     var filteredTracks: [Track] {
@@ -30,12 +38,25 @@ final class PlaylistDetailViewModel: ObservableObject {
         isLoading = tracks.isEmpty
         errorMessage = nil
         do {
-            let response = try await NeteaseAPI.playlistDetail(id: playlistID)
-            detail = response.playlist
-            tracks = response.playlist.tracks.filter { !reducedRecommendationIDs.contains($0.id) }
-            merge(privileges: response.privileges)
-            isLoading = false
-            await loadRemainingTracks()
+            switch platform {
+            case .netease:
+                let response = try await NeteaseAPI.playlistDetail(id: playlistID)
+                detail = response.playlist
+                tracks = response.playlist.tracks.filter { !reducedRecommendationIDs.contains($0.id) }
+                merge(privileges: response.privileges)
+                isLoading = false
+                await loadRemainingTracks()
+            case .qq:
+                guard let qqDissID else { throw QQMusicAPI.QQError.missingIdentifier }
+                let payload = try await QQMusicAPI.playlistDetail(dissID: qqDissID)
+                detail = payload.detail
+                // No privilege merge and no paging: QQ hands back the whole
+                // track list at once, and it has no per-track privilege map.
+                // The `reducedRecommendationIDs` filter is skipped too — those
+                // ids are NetEase ids and would collide with QQ song ids.
+                tracks = payload.tracks
+                isLoading = false
+            }
         } catch {
             isLoading = false
             if tracks.isEmpty { errorMessage = error.localizedDescription }
@@ -76,6 +97,12 @@ struct PlaylistDetailView: View {
     let playlistID: Int
     var isLikedList = false
     var recommendationContext: RecommendationContext?
+    /// Which catalog this playlist lives in. Defaulted so every existing call
+    /// site keeps compiling and keeps meaning NetEase.
+    var platform: TrackPlatform = .netease
+    /// QQ addresses playlists by a string `dissid`; the numeric id above can't
+    /// carry it.
+    var qqDissID: String?
 
     @StateObject private var model: PlaylistDetailViewModel
     @EnvironmentObject private var player: PlayerService
@@ -83,15 +110,39 @@ struct PlaylistDetailView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showFullDescription = false
 
-    init(playlistID: Int, isLikedList: Bool = false, recommendationContext: RecommendationContext? = nil) {
+    init(playlistID: Int,
+         isLikedList: Bool = false,
+         recommendationContext: RecommendationContext? = nil,
+         platform: TrackPlatform = .netease,
+         qqDissID: String? = nil) {
         self.playlistID = playlistID
         self.isLikedList = isLikedList
         self.recommendationContext = recommendationContext
-        _model = StateObject(wrappedValue: PlaylistDetailViewModel(playlistID: playlistID))
+        self.platform = platform
+        self.qqDissID = qqDissID
+        _model = StateObject(wrappedValue: PlaylistDetailViewModel(
+            playlistID: playlistID, platform: platform, qqDissID: qqDissID))
     }
 
+    /// Editing a playlist is a NetEase account operation. A QQ playlist opened
+    /// through search is read-only, so this stays false for `.qq` and every
+    /// "add to / remove from my playlist" affordance hides itself.
     private var isOwnPlaylist: Bool {
-        model.detail?.creator?.userId == account.profile?.userId
+        platform == .netease && model.detail?.creator?.userId == account.profile?.userId
+    }
+
+    /// NetEase-only affordances (subscribe, similar playlists, heartbeat mode).
+    private var isNetEase: Bool { platform == .netease }
+
+    /// The "place" this queue came from, for Recently Played.
+    ///
+    /// `nil` for QQ: reloading a place is a NetEase endpoint keyed by NetEase's
+    /// own song/playlist numbering, so a QQ id would rebuild the queue as some
+    /// unrelated playlist. Omitting the context keeps a QQ queue out of that
+    /// list rather than offering a reload that plays the wrong music.
+    private var playContext: PlayContext? {
+        guard platform == .netease else { return nil }
+        return model.detail.map { .playlist(id: $0.id, name: $0.name) }
     }
 
     private var isCompact: Bool {
@@ -119,8 +170,8 @@ struct PlaylistDetailView: View {
                     TrackListView(
                         tracks: model.filteredTracks,
                         privileges: model.privileges,
-                        source: .playlist(playlistID),
-                        context: model.detail.map { .playlist(id: playlistID, name: $0.name) },
+                        source: .playlist(model.detail?.id ?? playlistID),
+                        context: model.detail.map { .playlist(id: $0.id, name: $0.name) },
                         removableFromPlaylistID: isOwnPlaylist ? playlistID : nil,
                         onRemoved: { model.remove($0) },
                         recommendationContext: recommendationContext,
@@ -229,7 +280,7 @@ struct PlaylistDetailView: View {
             HStack(spacing: 10) {
                 Button {
                     player.play(tracks: playable, source: .playlist(playlistID),
-                                context: model.detail.map { .playlist(id: playlistID, name: $0.name) })
+                                context: playContext)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "play.fill")
@@ -255,7 +306,7 @@ struct PlaylistDetailView: View {
                             .background(.primary.opacity(0.06), in: Circle())
                     }
                     .buttonStyle(.pressable)
-                } else if !isOwnPlaylist, account.isLoggedIn {
+                } else if isNetEase, !isOwnPlaylist, account.isLoggedIn {
                     Button {
                         toggleSubscribe(detail)
                     } label: {
@@ -339,7 +390,7 @@ struct PlaylistDetailView: View {
         HStack(spacing: 10) {
             Button {
                 player.play(tracks: playable, source: .playlist(playlistID),
-                            context: .playlist(id: playlistID, name: detail.name))
+                            context: playContext)
             } label: {
                 Label("播放全部", systemImage: "play.fill")
                     .font(.system(size: 13, weight: .semibold))
@@ -362,7 +413,7 @@ struct PlaylistDetailView: View {
                         .background(.primary.opacity(0.06), in: Capsule())
                 }
                 .buttonStyle(.pressable)
-            } else if !isOwnPlaylist, account.isLoggedIn {
+            } else if isNetEase, !isOwnPlaylist, account.isLoggedIn {
                 Button {
                     toggleSubscribe(detail)
                 } label: {
@@ -394,6 +445,9 @@ struct PlaylistDetailView: View {
     }
 
     private var playable: [Track] {
+        // QQ tracks carry no privilege map, so the NetEase paywall filter has
+        // nothing to read and would hide every track.
+        if platform == .qq { return model.tracks }
         if SettingsManager.shared.canResolveUnblockedTracks { return model.tracks }
         return model.tracks.filter {
             $0.playability(privilege: model.privileges[$0.id],
@@ -403,6 +457,9 @@ struct PlaylistDetailView: View {
     }
 
     private func startHeartbeat() {
+        // "Heartbeat" is a NetEase recommendation endpoint keyed by NetEase
+        // song ids — a QQ id would silently fetch some other song's list.
+        guard isNetEase else { return }
         Task {
             guard let seed = playable.randomElement() else { return }
             do {

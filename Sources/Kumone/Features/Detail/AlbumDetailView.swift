@@ -2,6 +2,12 @@ import SwiftUI
 
 struct AlbumDetailView: View {
     let albumID: Int
+    /// Which catalog this album lives in. Defaulted so every existing call
+    /// site keeps compiling and keeps meaning NetEase.
+    var platform: TrackPlatform = .netease
+    /// QQ addresses albums by a string `albummid`; the numeric id above can't
+    /// carry it.
+    var qqAlbumMid: String?
 
     @State private var album: AlbumDetail?
     @State private var tracks: [Track] = []
@@ -14,6 +20,29 @@ struct AlbumDetailView: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    init(albumID: Int, platform: TrackPlatform = .netease, qqAlbumMid: String? = nil) {
+        self.albumID = albumID
+        self.platform = platform
+        self.qqAlbumMid = qqAlbumMid
+    }
+
+    /// Identifies *this* album for `.task`, which for QQ is the mid — two QQ
+    /// albums could otherwise share a numeric id of 0.
+    private var loadIdentity: String {
+        qqAlbumMid ?? "n\(albumID)"
+    }
+
+    /// The "place" this queue came from, for Recently Played.
+    ///
+    /// `nil` for QQ: reloading a place is a NetEase endpoint keyed by NetEase's
+    /// own numbering, so a QQ id would rebuild the queue as some unrelated
+    /// album. Omitting the context keeps a QQ queue out of that list rather
+    /// than offering a reload that plays the wrong music.
+    private var playContext: PlayContext? {
+        guard platform == .netease, let album else { return nil }
+        return .album(id: album.id, name: album.name)
+    }
 
     private var isCompact: Bool {
         #if os(iOS)
@@ -39,8 +68,8 @@ struct AlbumDetailView: View {
 
                     TrackListView(
                         tracks: tracks,
-                        source: .album(albumID),
-                        context: .album(id: albumID, name: album.name)
+                        source: .album(album.id),
+                        context: playContext
                     )
                     .padding(.horizontal, isCompact ? 6 : Theme.Layout.contentInset - 10)
 
@@ -53,14 +82,16 @@ struct AlbumDetailView: View {
                             HStack(spacing: 16) {
                                 Spacer().frame(width: (isCompact ? 16 : Theme.Layout.contentInset) - 16)
                                 ForEach(otherAlbums) { item in
-                                    NavigationLink(value: Destination.album(item.id)) {
-                                        CoverCardBody(
-                                            coverURL: item.picUrl?.resizedImageURL(384),
-                                            title: item.name,
-                                            subtitle: Formatters.date(fromMS: item.publishTime)
-                                        )
+                                    if let destination = albumDestination(item) {
+                                        NavigationLink(value: destination) {
+                                            CoverCardBody(
+                                                coverURL: item.picUrl?.resizedImageURL(384),
+                                                title: item.name,
+                                                subtitle: Formatters.date(fromMS: item.publishTime)
+                                            )
+                                        }
+                                        .buttonStyle(.interactiveCard)
                                     }
-                                    .buttonStyle(.interactiveCard)
                                 }
                                 Spacer().frame(width: (isCompact ? 16 : Theme.Layout.contentInset) - 16)
                             }
@@ -83,7 +114,7 @@ struct AlbumDetailView: View {
         #else
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .task(id: albumID) {
+        .task(id: loadIdentity) {
             await load()
         }
     }
@@ -92,16 +123,29 @@ struct AlbumDetailView: View {
         isLoading = true
         errorMessage = nil
         do {
-            let response = try await NeteaseAPI.album(id: albumID)
-            album = response.album
-            tracks = response.songs
-            isLoading = false
-            if let dynamic = try? await NeteaseAPI.albumDynamic(id: albumID) {
-                isSubscribed = dynamic.isSub ?? false
-            }
-            if let artistID = response.album.artist?.id,
-               let albums = try? await NeteaseAPI.artistAlbums(id: artistID, limit: 12) {
-                otherAlbums = albums.hotAlbums.filter { $0.id != albumID }
+            switch platform {
+            case .netease:
+                let response = try await NeteaseAPI.album(id: albumID)
+                album = response.album
+                tracks = response.songs
+                isLoading = false
+                if let dynamic = try? await NeteaseAPI.albumDynamic(id: albumID) {
+                    isSubscribed = dynamic.isSub ?? false
+                }
+                if let artistID = response.album.artist?.id,
+                   let albums = try? await NeteaseAPI.artistAlbums(id: artistID, limit: 12) {
+                    otherAlbums = albums.hotAlbums.filter { $0.id != albumID }
+                }
+            case .qq:
+                guard let qqAlbumMid else { throw QQMusicAPI.QQError.missingIdentifier }
+                let response = try await QQMusicAPI.albumDetail(mid: qqAlbumMid)
+                album = response.album
+                tracks = response.songs
+                isLoading = false
+                // No "other albums by this artist" shelf for QQ: it is fed by
+                // the artist-albums endpoint, and QQ's artist endpoints no
+                // longer answer (see `QQMusicAPI.artistSongs`). An empty list
+                // simply hides the section instead of showing a wrong one.
             }
         } catch {
             isLoading = false
@@ -125,13 +169,12 @@ struct AlbumDetailView: View {
                         .lineLimit(3)
 
                     if let artist = album.artist {
-                        NavigationLink(value: Destination.artist(artist.id)) {
+                        artistLink(artist) {
                             Text(artist.name)
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(Theme.accent)
                                 .lineLimit(1)
                         }
-                        .buttonStyle(.plain)
                     }
 
                     Text("\(tracks.count) 首 · \(Formatters.date(fromMS: album.publishTime))")
@@ -178,8 +221,8 @@ struct AlbumDetailView: View {
             // Compact Action Bar
             HStack(spacing: 10) {
                 Button {
-                    player.play(tracks: tracks, source: .album(albumID),
-                                context: .album(id: albumID, name: album.name))
+                    player.play(tracks: tracks, source: .album(album.id),
+                                context: playContext)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "play.fill")
@@ -194,7 +237,9 @@ struct AlbumDetailView: View {
                 }
                 .buttonStyle(.pressable)
 
-                if account.isLoggedIn {
+                // Subscribing an album is a NetEase-account relationship, and a
+                // QQ album has no equivalent to offer while logged out.
+                if platform == .netease && account.isLoggedIn {
                     Button {
                         toggleSubscribe()
                     } label: {
@@ -229,12 +274,11 @@ struct AlbumDetailView: View {
                     .lineLimit(2)
 
                 if let artist = album.artist {
-                    NavigationLink(value: Destination.artist(artist.id)) {
+                    artistLink(artist) {
                         Text(artist.name)
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(Theme.accent)
                     }
-                    .buttonStyle(.plain)
                 }
 
                 Text("\(tracks.count) 首 · \(totalDuration) · \(Formatters.date(fromMS: album.publishTime))")
@@ -267,8 +311,8 @@ struct AlbumDetailView: View {
 
                 HStack(spacing: 10) {
                     Button {
-                        player.play(tracks: tracks, source: .album(albumID),
-                                context: .album(id: albumID, name: album.name))
+                        player.play(tracks: tracks, source: .album(album.id),
+                                context: playContext)
                     } label: {
                         Label("播放", systemImage: "play.fill")
                             .font(.system(size: 13, weight: .semibold))
@@ -280,7 +324,7 @@ struct AlbumDetailView: View {
                     }
                     .buttonStyle(.pressable)
 
-                    if account.isLoggedIn {
+                    if platform == .netease && account.isLoggedIn {
                         Button {
                             toggleSubscribe()
                         } label: {
@@ -303,6 +347,39 @@ struct AlbumDetailView: View {
     private var totalDuration: String {
         let totalMS = tracks.reduce(into: 0) { $0 += $1.durationMS }
         return Formatters.longDuration(TimeInterval(totalMS) / 1000)
+    }
+
+    /// QQ artists are addressed by their string `singerMID`, NetEase ones by a
+    /// numeric id, so the link target depends on which catalog is showing.
+    /// `nil` means "nothing to push" — the row renders as plain text instead of
+    /// opening a page that could not load.
+    private func artistDestination(_ artist: ArtistSummary) -> Destination? {
+        if platform == .qq {
+            guard let mid = artist.mid else { return nil }
+            return .qqArtist(mid: mid, name: artist.name)
+        }
+        return .artist(artist.id)
+    }
+
+    private func albumDestination(_ item: AlbumSummary) -> Destination? {
+        if platform == .qq {
+            guard let mid = item.mid else { return nil }
+            return .qqAlbum(mid)
+        }
+        return .album(item.id)
+    }
+
+    @ViewBuilder
+    private func artistLink<Label: View>(
+        _ artist: ArtistSummary,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        if let destination = artistDestination(artist) {
+            NavigationLink(value: destination, label: label)
+                .buttonStyle(.plain)
+        } else {
+            label()
+        }
     }
 
     private func toggleSubscribe() {

@@ -979,10 +979,8 @@ final class PlayerService: ObservableObject {
             + (resolved.unblockSource.map { "unblock=\($0) " } ?? "")
             + (resolved.isTrial ? "trial " : ""))
         scheduleAudioUnitReadback()
+        // Silent by request: see the matching note in `PlayerServiceIOS`.
         unblockSource = resolved.unblockSource
-        if let source = resolved.unblockSource {
-            ToastCenter.shared.show(String(localized: "已使用第三方音源：\(source)"))
-        }
         if resolved.isTrial {
             isTrial = true
             ToastCenter.shared.show(String(localized: "VIP 歌曲，当前为试听片段"))
@@ -1240,8 +1238,11 @@ final class PlayerService: ObservableObject {
             // The words next: this track is about to be the *incoming* side of
             // a seam and, one song later, the outgoing side whose lyric line
             // decides where a vocal exchange hands over. One small JSON call.
-            Task.detached(priority: .utility) { [id = target.id] in
-                await LyricsSidecar.fetchAndWrite(trackID: id, for: local)
+            Task.detached(priority: .utility) {
+                [id = target.id, platform = target.platform,
+                 songmid = target.songmid ?? target.mediaMid] in
+                await LyricsSidecar.fetchAndWrite(
+                    trackID: id, platform: platform, songmid: songmid, for: local)
             }
             AutoMixDebugModel.shared.setNextStage(.analyzing)
             let analysis = await self.analysis(for: resolved.key, fileURL: local)
@@ -2440,7 +2441,7 @@ final class PlayerService: ObservableObject {
     }
 
     private func loadLyrics(for track: Track, generation: Int) async {
-        let response = try? await NeteaseAPI.lyric(id: track.id)
+        let response = await LyricsSource.fetch(for: track)
         guard generation == resolveGeneration else { return }
         lyrics = response.map(LyricsParser.parse)
         updateLyricsCursor(at: livePlaybackTime)
@@ -2775,8 +2776,12 @@ final class PlayerService: ObservableObject {
     /// Tell the server the track started, once per track. Called from the
     /// point playback actually begins — the cache-hit path and the streaming
     /// path both reach it, and `startPlaying` clears the flag.
+    ///
+    /// QQ tracks are never reported: both halves of a scrobble write to the
+    /// NetEase listening history keyed by song id, and the two catalogs number
+    /// their songs independently (see `TrackPlatform.isAccountBound`).
     private func scrobbleStartIfNeeded(_ track: Track) {
-        guard !startScrobbled else { return }
+        guard !startScrobbled, track.isAccountBound else { return }
         startScrobbled = true
         let tid = track.id
         let sid = source.sourceID
@@ -2784,7 +2789,8 @@ final class PlayerService: ObservableObject {
     }
 
     private func scrobbleIfNeeded(completed: Bool) {
-        guard let track = currentTrack, !scrobbled, progress > 1 else { return }
+        guard let track = currentTrack, !scrobbled, progress > 1, track.isAccountBound
+        else { return }
         scrobbled = true
         let seconds = completed ? Int(duration) : Int(progress)
         let sourceID = source.sourceID

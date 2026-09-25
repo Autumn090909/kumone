@@ -64,11 +64,13 @@ public struct KumoneApp: App {
 
                 Button(player.currentTrack.map { AccountStore.shared.isLiked($0.id) ? String(localized: "取消喜欢") : String(localized: "喜欢") } ?? String(localized: "喜欢")) {
                     if let track = player.currentTrack {
-                        Task { await account.toggleLike(trackID: track.id) }
+                        Task { await account.toggleLike(track: track) }
                     }
                 }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
-                .disabled(!player.hasCurrentTrack)
+                // Liking writes to the NetEase account, so it is unavailable
+                // while a QQ track is playing.
+                .disabled(!player.hasCurrentTrack || player.currentTrack?.isAccountBound == false)
 
                 Button("歌词") {
                     player.activePanel = player.activePanel == .lyrics ? nil : .lyrics

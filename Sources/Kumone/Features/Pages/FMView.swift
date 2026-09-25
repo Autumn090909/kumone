@@ -178,7 +178,7 @@ struct FMView: View {
             .help("下一首")
 
             if let track {
-                LikeButton(trackID: track.id, size: 16)
+                LikeButton(trackID: track.id, isAccountBound: track.isAccountBound, size: 16)
                     .frame(width: 48, height: 48)
                     .background(.primary.opacity(0.06), in: Circle())
             }

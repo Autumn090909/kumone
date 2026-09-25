@@ -79,6 +79,16 @@ enum Destination: Hashable {
     case collections
     case cloud
     case search(String)
+    // QQ addresses its albums, artists and playlists by string mids
+    // (`albumMID` / `singerMID` / `dissid`). Folding those into the Int cases
+    // above would let a QQ id resolve as some unrelated NetEase entity, so they
+    // get their own cases and their own detail views.
+    /// The artist case carries the display name too: QQ's artist endpoints are
+    /// gone, so the page is rebuilt from name-based search — see
+    /// `QQMusicAPI.artistSongs`.
+    case qqAlbum(String)
+    case qqArtist(mid: String, name: String)
+    case qqPlaylist(String)
 }
 
 extension Array where Element == Destination {
@@ -114,6 +124,15 @@ struct DestinationsModifier: ViewModifier {
                     CloudView()
                 case .search(let query):
                     SearchView(query: query)
+                case .qqAlbum(let mid):
+                    // `albumID` is unused on this path — QQ identifies the
+                    // album by `mid`. Passing 0 keeps it obviously non-real.
+                    AlbumDetailView(albumID: 0, platform: .qq, qqAlbumMid: mid)
+                case .qqArtist(let mid, let name):
+                    ArtistDetailView(artistID: 0, platform: .qq,
+                                     qqArtistMid: mid, qqArtistName: name)
+                case .qqPlaylist(let dissID):
+                    PlaylistDetailView(playlistID: 0, platform: .qq, qqDissID: dissID)
                 }
             }
             .playerContentInset()

@@ -2,6 +2,14 @@ import SwiftUI
 
 struct ArtistDetailView: View {
     let artistID: Int
+    /// Which catalog to read from. Defaulted so every existing call site keeps
+    /// compiling and keeps meaning NetEase.
+    var platform: TrackPlatform = .netease
+    /// QQ addresses an artist by `singerMID`, which the numeric id above cannot
+    /// express. The name rides along because it is the only search key QQ's
+    /// surviving endpoints accept — see `QQMusicAPI.artistSongs`.
+    var qqArtistMid: String?
+    var qqArtistName: String?
 
     @State private var artist: ArtistSummary?
     @State private var hotSongs: [Track] = []
@@ -22,6 +30,17 @@ struct ArtistDetailView: View {
         #else
         return false
         #endif
+    }
+
+    /// The "place" this queue came from, for Recently Played.
+    ///
+    /// `nil` for QQ: reloading a place is a NetEase endpoint keyed by NetEase's
+    /// own numbering, so a QQ id would rebuild the queue with some unrelated
+    /// artist's songs. Omitting the context keeps a QQ queue out of that list
+    /// rather than offering a reload that plays the wrong music.
+    private var playContext: PlayContext? {
+        guard platform == .netease, let artist else { return nil }
+        return .artist(id: artist.id, name: artist.name)
     }
 
     var body: some View {
@@ -46,7 +65,7 @@ struct ArtistDetailView: View {
                             tracks: hotSongs,
                             style: .compact,
                             source: .artist(artistID),
-                            context: .artist(id: artistID, name: artist.name)
+                            context: playContext
                         )
                         .padding(.horizontal, isCompact ? 6 : Theme.Layout.contentInset - 10)
                     }
@@ -131,6 +150,13 @@ struct ArtistDetailView: View {
     private func load() async {
         isLoading = true
         errorMessage = nil
+        switch platform {
+        case .netease: await loadNetease()
+        case .qq: await loadQQ()
+        }
+    }
+
+    private func loadNetease() async {
         do {
             let response = try await NeteaseAPI.artist(id: artistID)
             artist = response.artist
@@ -149,6 +175,50 @@ struct ArtistDetailView: View {
             isLoading = false
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// QQ keeps no working artist endpoint: the old `fcg_v8_singer_track_cp`
+    /// answers HTTP 404, `fcg_v8_singer_album` answers `code 400`, and every
+    /// `musicu` module name tried came back `code 500003` with no data. So the
+    /// page is assembled from what does work — song search filtered to this
+    /// artist's mid, album search filtered the same way, and a `smartbox`
+    /// lookup for the portrait.
+    ///
+    /// That makes this page's song list "this artist's songs that came back for
+    /// their name", **not** a complete discography. The header says so, because
+    /// a user comparing it against QQ's own app would otherwise read the
+    /// difference as a bug.
+    private func loadQQ() async {
+        guard let name = qqArtistName ?? artist?.name else {
+            isLoading = false
+            errorMessage = QQMusicAPI.QQError.missingIdentifier.localizedDescription
+            return
+        }
+        let mid = qqArtistMid ?? artist?.mid
+
+        async let lookupTask = try? QQMusicAPI.searchArtists(name, limit: 20)
+        async let songsTask = try? QQMusicAPI.artistSongs(singerMid: mid ?? "", keyword: name)
+        async let albumsTask = try? QQMusicAPI.searchAlbums(name, limit: 30)
+
+        let lookup = (await lookupTask) ?? []
+        // Prefer the entry whose mid matches; fall back to what the caller
+        // passed in, so a suggestion endpoint that returns nothing still leaves
+        // a renderable header instead of a blank page.
+        artist = lookup.first { mid == nil || $0.mid == mid }
+            ?? QQMusicAPI.artistSummary(mid: mid, name: name)
+
+        hotSongs = (await songsTask) ?? []
+
+        // Album search matches on name, so homonyms' albums come back too; the
+        // artist name is what separates them.
+        let found = (await albumsTask) ?? []
+        let mine = found.filter { mid == nil || $0.artistName.contains(name) }
+        // QQ's album search reports no track count, so "album vs EP/single"
+        // cannot be decided here — everything goes in one strip rather than
+        // being misfiled as singles.
+        albums = mine
+        epsAndSingles = []
+        isLoading = false
     }
 
     // MARK: - Compact Header
@@ -171,17 +241,22 @@ struct ArtistDetailView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    Text("\(artist.musicSize) 首歌曲 · \(artist.albumSize) 张专辑")
+                    Text(statsLine(artist))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                    if platform == .qq {
+                        Text("歌曲来自搜索结果，非该歌手的全部作品")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
 
             // Compact Action Bar
             HStack(spacing: 10) {
                 Button {
-                    player.play(tracks: hotSongs, source: .artist(artistID),
-                                context: .artist(id: artistID, name: artist.name))
+                    player.play(tracks: hotSongs, source: .artist(artist.id),
+                                context: playContext)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "play.fill")
@@ -196,7 +271,9 @@ struct ArtistDetailView: View {
                 }
                 .buttonStyle(.pressable)
 
-                if account.isLoggedIn {
+                // Following an artist is a NetEase-account relationship; QQ has
+                // no equivalent to offer while logged out.
+                if platform == .netease && account.isLoggedIn {
                     Button {
                         toggleFollow()
                     } label: {
@@ -233,16 +310,21 @@ struct ArtistDetailView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
-                Text("\(artist.musicSize) 首歌曲 · \(artist.albumSize) 张专辑")
+                Text(statsLine(artist))
                     .font(.system(size: 11.5))
                     .foregroundStyle(.tertiary)
+                if platform == .qq {
+                    Text("歌曲来自搜索结果，非该歌手的全部作品")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                }
 
                 Spacer(minLength: 6)
 
                 HStack(spacing: 10) {
                     Button {
-                        player.play(tracks: hotSongs, source: .artist(artistID),
-                                context: .artist(id: artistID, name: artist.name))
+                        player.play(tracks: hotSongs, source: .artist(artist.id),
+                                context: playContext)
                     } label: {
                         Label("播放热门", systemImage: "play.fill")
                             .font(.system(size: 13, weight: .semibold))
@@ -254,7 +336,7 @@ struct ArtistDetailView: View {
                     }
                     .buttonStyle(.pressable)
 
-                    if account.isLoggedIn {
+                    if platform == .netease && account.isLoggedIn {
                         Button {
                             toggleFollow()
                         } label: {
@@ -273,15 +355,54 @@ struct ArtistDetailView: View {
         }
     }
 
+    @ViewBuilder
     private func albumCard(_ album: AlbumSummary) -> some View {
-        NavigationLink(value: Destination.album(album.id)) {
+        // No mid means nothing safe to open — falling back to the NetEase route
+        // would look up a QQ id against the wrong catalog.
+        if let destination = albumDestination(album) {
+            NavigationLink(value: destination) {
+                CoverCardBody(
+                    coverURL: album.picUrl?.resizedImageURL(384),
+                    title: album.name,
+                    subtitle: album.publishYear
+                )
+            }
+            .buttonStyle(.interactiveCard)
+        } else {
             CoverCardBody(
                 coverURL: album.picUrl?.resizedImageURL(384),
                 title: album.name,
                 subtitle: album.publishYear
             )
         }
-        .buttonStyle(.interactiveCard)
+    }
+
+    /// QQ's lookup carries no song/album totals, so quoting the model's counts
+    /// would print a confident "0 首歌曲 · 0 张专辑" next to a full track list.
+    /// For QQ the numbers come from what actually loaded.
+    private func statsLine(_ artist: ArtistSummary) -> String {
+        if platform == .qq {
+            return "\(hotSongs.count) 首歌曲 · \(albums.count + epsAndSingles.count) 张专辑"
+        }
+        return "\(artist.musicSize) 首歌曲 · \(artist.albumSize) 张专辑"
+    }
+
+    /// QQ artists are addressed by their string `singerMID`; NetEase ones by a
+    /// numeric id. `nil` means the row has nowhere useful to go.
+    private func artistDestination(_ artist: ArtistSummary) -> Destination? {
+        if platform == .qq {
+            guard let mid = artist.mid else { return nil }
+            return .qqArtist(mid: mid, name: artist.name)
+        }
+        return .artist(artist.id)
+    }
+
+    private func albumDestination(_ album: AlbumSummary) -> Destination? {
+        if platform == .qq {
+            guard let mid = album.mid else { return nil }
+            return .qqAlbum(mid)
+        }
+        return .album(album.id)
     }
 
     private func toggleFollow() {

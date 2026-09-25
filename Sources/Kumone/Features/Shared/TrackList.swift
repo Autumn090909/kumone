@@ -273,16 +273,20 @@ struct TrackRow: View {
 
     private var likeAndDuration: some View {
         HStack(spacing: 8) {
-            let liked = account.isLiked(track.id)
-            Button {
-                Task { await account.toggleLike(trackID: track.id) }
-            } label: {
-                Image(systemName: liked ? "heart.fill" : "heart")
-                    .font(.system(size: 12))
-                    .foregroundStyle(liked ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.secondary))
+            // Liking writes to the NetEase account by song id, so a QQ track
+            // gets no heart here (see TrackPlatform.isAccountBound).
+            if track.isAccountBound {
+                let liked = account.isLiked(track.id)
+                Button {
+                    Task { await account.toggleLike(trackID: track.id) }
+                } label: {
+                    Image(systemName: liked ? "heart.fill" : "heart")
+                        .font(.system(size: 12))
+                        .foregroundStyle(liked ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.secondary))
+                }
+                .buttonStyle(.pressable)
+                .opacity(liked || isHovering ? 1 : 0)
             }
-            .buttonStyle(.pressable)
-            .opacity(liked || isHovering ? 1 : 0)
 
             Text(Formatters.duration(track.duration))
                 .font(.system(size: 11.5).monospacedDigit())
@@ -298,12 +302,16 @@ struct TrackRow: View {
             player.addToPlayNext(track)
         }
         Divider()
-        let liked = account.isLiked(track.id)
-        Button(liked ? String(localized: "从「我喜欢」中移除") : String(localized: "添加到「我喜欢」")) {
-            Task { await account.toggleLike(trackID: track.id) }
-        }
-        Button("收藏到歌单…") {
-            showAddToPlaylist = true
+        // Both of these write to the NetEase account keyed by song id, so they
+        // are not offered for QQ tracks (see TrackPlatform.isAccountBound).
+        if track.isAccountBound {
+            let liked = account.isLiked(track.id)
+            Button(liked ? String(localized: "从「我喜欢」中移除") : String(localized: "添加到「我喜欢」")) {
+                Task { await account.toggleLike(trackID: track.id) }
+            }
+            Button("收藏到歌单…") {
+                showAddToPlaylist = true
+            }
         }
         if let pid = removableFromPlaylistID {
             Button("从歌单中删除", role: .destructive) {
@@ -319,7 +327,7 @@ struct TrackRow: View {
             }
         }
         #if os(macOS)
-        if !account.isLiked(track.id), let onRecommendationReduced {
+        if track.isAccountBound, !account.isLiked(track.id), let onRecommendationReduced {
             Button(String(localized: "减少推荐"), role: .destructive) {
                 guard !isReducingRecommendation else { return }
                 isReducingRecommendation = true
@@ -350,7 +358,9 @@ struct TrackRow: View {
         }
         Divider()
         Button("复制链接") {
-            Platform.copyToPasteboard(string: "https://music.163.com/#/song?id=\(track.id)")
+            // Points at the catalog the song came from; a QQ id inside a NetEase
+            // URL opens an unrelated track.
+            Platform.copyToPasteboard(string: track.shareURL)
             ToastCenter.shared.show(String(localized: "链接已复制"))
         }
     }

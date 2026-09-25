@@ -69,11 +69,30 @@ enum TrackPlatform: String, Codable, Hashable, Sendable, CaseIterable {
     /// to say which platform it means.
     var cacheKeyPrefix: String { rawValue }
 
+    /// Whether songs here belong to the NetEase account system.
+    ///
+    /// Liking a song, saving it into a playlist and "reduce recommendation" are
+    /// all NetEase-account calls keyed by song id. Because the two catalogs
+    /// number their songs independently, handing a QQ id to those endpoints
+    /// does not fail — it quietly operates on whichever *NetEase* song happens
+    /// to own that number, which is a silent write to the user's account.
+    /// Every account-bound action is therefore gated on this.
+    var isAccountBound: Bool { self == .netease }
+
     /// QQ's own artwork CDN. NetEase's `?param=WyH` resize convention does not
     /// apply here, so covers are built by template instead.
     static func qqAlbumCoverURL(albumMid: String, size: Int = 300) -> URL? {
         guard !albumMid.isEmpty else { return nil }
         return URL(string: "https://y.gtimg.cn/music/photo_new/T002R\(size)x\(size)M000\(albumMid).jpg")
+    }
+
+    /// QQ's artist-photo template — a *different* template id from the album
+    /// one (`T001` vs `T002`) and with a `_11` suffix on the file name. Feeding
+    /// an album mid to this, or a singer mid to the album one, yields a 404
+    /// rather than a fallback image, so the two stay separate helpers.
+    static func qqSingerAvatarURL(singerMid: String, size: Int = 300) -> URL? {
+        guard !singerMid.isEmpty else { return nil }
+        return URL(string: "https://y.gtimg.cn/music/photo_new/T001R\(size)x\(size)M000\(singerMid)_11.jpg")
     }
 }
 
@@ -114,6 +133,24 @@ struct Track: Codable, Hashable, Identifiable {
     var artistNames: String { artists.map(\.name).joined(separator: " / ") }
     var duration: TimeInterval { TimeInterval(durationMS) / 1000 }
     var subtitle: String? { transNames.first ?? alias.first }
+
+    /// Forwarded from the platform — see `TrackPlatform.isAccountBound`. Call
+    /// sites read it off the track because that is what they hold.
+    var isAccountBound: Bool { platform.isAccountBound }
+
+    /// The link to hand out when the user copies this track. The two catalogs
+    /// have different URL shapes, and a QQ id dropped into the NetEase one opens
+    /// whichever unrelated song owns that number — worse than no link, because
+    /// the recipient has no way to tell.
+    var shareURL: String {
+        switch platform {
+        case .netease:
+            return "https://music.163.com/#/song?id=\(id)"
+        case .qq:
+            guard let mid = songmid ?? mediaMid, !mid.isEmpty else { return "" }
+            return "https://y.qq.com/n/ryqq/songDetail/\(mid)"
+        }
+    }
 
     /// Explicit because a custom `init(from:)` in the body suppresses the
     /// synthesised memberwise one, and the QQ catalog needs to build tracks.

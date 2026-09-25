@@ -12,13 +12,15 @@ final class SearchViewModel: ObservableObject {
         var id: String { rawValue }
     }
 
-    /// QQ's catalog is only wired up for song search so far. Offering its other
-    /// tabs would mean tabs that always come back empty, so the set is narrowed
-    /// per platform instead of pretending all five work everywhere.
+    /// QQ is wired up for songs, artists, albums and playlists. Its "综合" tab
+    /// is deliberately left out: that tab costs four simultaneous requests, and
+    /// QQ's `musicu` endpoint throttles hard — `code 2001` on roughly one
+    /// request in three (measured) — so firing four at once would mostly
+    /// produce a half-empty page instead of a useful overview.
     static func tabs(for platform: TrackPlatform) -> [Tab] {
         switch platform {
         case .netease: return Tab.allCases
-        case .qq: return [.songs]
+        case .qq: return [.songs, .artists, .albums, .playlists]
         }
     }
 
@@ -285,51 +287,92 @@ struct SearchView: View {
 
     private func artistCards(_ items: some Collection<ArtistSummary>) -> some View {
         ForEach(Array(items)) { artist in
-            NavigationLink {
-                ArtistDetailView(artistID: artist.id)
-            } label: {
-                VStack(spacing: 10) {
-                    CachedAsyncImage(url: artist.picUrl?.resizedImageURL(256))
-                        .frame(width: 128, height: 128)
-                        .clipShape(Circle())
-                    Text(artist.name)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+            if let destination = artistDestination(artist) {
+                NavigationLink(value: destination) {
+                    artistCardBody(artist)
                 }
-                .frame(width: 140)
+                .buttonStyle(.plain)
+            } else {
+                // No mid means nowhere safe to go; QQ would otherwise be read
+                // against the NetEase catalog with a QQ id.
+                artistCardBody(artist)
             }
-            .buttonStyle(.plain)
         }
+    }
+
+    private func artistCardBody(_ artist: ArtistSummary) -> some View {
+        VStack(spacing: 10) {
+            CachedAsyncImage(url: artist.picUrl?.resizedImageURL(256))
+                .frame(width: 128, height: 128)
+                .clipShape(Circle())
+            Text(artist.name)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+        }
+        .frame(width: 140)
     }
 
     private func albumCards(_ items: some Collection<AlbumSummary>) -> some View {
         ForEach(Array(items)) { album in
-            NavigationLink {
-                AlbumDetailView(albumID: album.id)
-            } label: {
-                CoverCardBody(
-                    coverURL: album.picUrl?.resizedImageURL(384),
-                    title: album.name,
-                    subtitle: album.artistName
-                )
+            if let destination = albumDestination(album) {
+                NavigationLink(value: destination) {
+                    albumCardBody(album)
+                }
+                .buttonStyle(.plain)
+            } else {
+                albumCardBody(album)
             }
-            .buttonStyle(.plain)
         }
+    }
+
+    private func albumCardBody(_ album: AlbumSummary) -> some View {
+        CoverCardBody(
+            coverURL: album.picUrl?.resizedImageURL(384),
+            title: album.name,
+            subtitle: album.artistName
+        )
     }
 
     private func playlistCards(_ items: some Collection<PlaylistSummary>) -> some View {
         ForEach(Array(items)) { playlist in
-            NavigationLink {
-                PlaylistDetailView(playlistID: playlist.id)
-            } label: {
-                CoverCardBody(
-                    coverURL: playlist.coverURL?.resizedImageURL(384),
-                    title: playlist.name,
-                    playCount: playlist.playCount
-                )
+            if let destination = playlistDestination(playlist) {
+                NavigationLink(value: destination) {
+                    playlistCardBody(playlist)
+                }
+                .buttonStyle(.plain)
+            } else {
+                playlistCardBody(playlist)
             }
-            .buttonStyle(.plain)
         }
+    }
+
+    private func playlistCardBody(_ playlist: PlaylistSummary) -> some View {
+        CoverCardBody(
+            coverURL: playlist.coverURL?.resizedImageURL(384),
+            title: playlist.name,
+            playCount: playlist.playCount
+        )
+    }
+
+    /// Which catalog a result belongs to decides where tapping it goes: NetEase
+    /// by numeric id, QQ by string mid. `nil` means the row has no usable
+    /// target and renders as a plain card.
+    private func artistDestination(_ artist: ArtistSummary) -> Destination? {
+        guard model.platform == .qq else { return .artist(artist.id) }
+        guard let mid = artist.mid else { return nil }
+        return .qqArtist(mid: mid, name: artist.name)
+    }
+
+    private func albumDestination(_ album: AlbumSummary) -> Destination? {
+        guard model.platform == .qq else { return .album(album.id) }
+        guard let mid = album.mid else { return nil }
+        return .qqAlbum(mid)
+    }
+
+    private func playlistDestination(_ playlist: PlaylistSummary) -> Destination? {
+        guard model.platform == .qq else { return .playlist(playlist.id) }
+        guard let dissID = playlist.mid else { return nil }
+        return .qqPlaylist(dissID)
     }
 }

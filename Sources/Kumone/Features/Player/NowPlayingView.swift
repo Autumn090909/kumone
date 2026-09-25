@@ -770,7 +770,9 @@ struct NowPlayingView: View {
         // metadata off the right edge. `maxWidth: .infinity` per control makes
         // the row scale to any width instead.
         HStack(spacing: 0) {
-            if let track = player.currentTrack {
+            // Liking writes to the NetEase account by song id, so it is not
+            // offered while a QQ track plays (see TrackPlatform.isAccountBound).
+            if let track = player.currentTrack, track.isAccountBound {
                 let liked = account.isLiked(track.id)
                 circleButton(
                     icon: liked ? "heart.fill" : "heart",
@@ -1297,17 +1299,21 @@ private struct CompactTrackHeader: View {
             if let track = player.currentTrack {
                 let liked = account.isLiked(track.id)
                 HStack(spacing: 0) {
-                    Button {
-                        Task { await account.toggleLike(trackID: track.id) }
-                    } label: {
-                        Image(systemName: liked ? "heart.fill" : "heart")
-                            .font(.system(size: 21, weight: .medium))
-                            .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
-                            .frame(width: 44, height: 44)
+                    // Liking writes to the NetEase account by song id, so it is
+                    // hidden for QQ tracks (see TrackPlatform.isAccountBound).
+                    if track.isAccountBound {
+                        Button {
+                            Task { await account.toggleLike(trackID: track.id) }
+                        } label: {
+                            Image(systemName: liked ? "heart.fill" : "heart")
+                                .font(.system(size: 21, weight: .medium))
+                                .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.pressable)
+                        .accessibilityLabel(liked ? "取消收藏" : "收藏")
+                        .accessibilityIdentifier("immersiveFavoriteButton")
                     }
-                    .buttonStyle(.pressable)
-                    .accessibilityLabel(liked ? "取消收藏" : "收藏")
-                    .accessibilityIdentifier("immersiveFavoriteButton")
 
                     Menu {
                         Button {
@@ -1316,10 +1322,14 @@ private struct CompactTrackHeader: View {
                             Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
                         }
 
-                        Button {
-                            showAddToPlaylist = true
-                        } label: {
-                            Label("加入歌单…", systemImage: "music.note.list")
+                        // Saving into a playlist writes to the NetEase account
+                        // keyed by song id, so it is not offered for QQ tracks.
+                        if track.isAccountBound {
+                            Button {
+                                showAddToPlaylist = true
+                            } label: {
+                                Label("加入歌单…", systemImage: "music.note.list")
+                            }
                         }
 
                         Divider()
@@ -1331,9 +1341,10 @@ private struct CompactTrackHeader: View {
                         #endif
 
                         Button {
-                            Platform.copyToPasteboard(
-                                string: "https://music.163.com/#/song?id=\(track.id)"
-                            )
+                            // The shareable link has to point at the catalog the
+                            // song actually came from — a QQ id in a NetEase URL
+                            // opens an unrelated track.
+                            Platform.copyToPasteboard(string: track.shareURL)
                             ToastCenter.shared.show(String(localized: "链接已复制"))
                         } label: {
                             Label("复制链接", systemImage: "link")
@@ -2093,19 +2104,24 @@ private struct MinimalTrackInfoRow: View {
         .accessibilityIdentifier("immersiveTrackMetadata")
     }
 
+    @ViewBuilder
     private func favoriteButton(for track: Track) -> some View {
-        let liked = account.isLiked(track.id)
-        return Button {
-            Task { await account.toggleLike(trackID: track.id) }
-        } label: {
-            Image(systemName: liked ? "heart.fill" : "heart")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
-                .frame(width: 44, height: 44)
+        // A NetEase-account write keyed by song id — not offered for QQ tracks
+        // (see TrackPlatform.isAccountBound).
+        if track.isAccountBound {
+            let liked = account.isLiked(track.id)
+            Button {
+                Task { await account.toggleLike(trackID: track.id) }
+            } label: {
+                Image(systemName: liked ? "heart.fill" : "heart")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.pressable)
+            .accessibilityLabel(liked ? "取消收藏" : "收藏")
+            .accessibilityIdentifier("immersiveFavoriteButton")
         }
-        .buttonStyle(.pressable)
-        .accessibilityLabel(liked ? "取消收藏" : "收藏")
-        .accessibilityIdentifier("immersiveFavoriteButton")
     }
 
     private func moreMenu(for track: Track) -> some View {
@@ -2122,10 +2138,14 @@ private struct MinimalTrackInfoRow: View {
                 Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
 
-            Button {
-                showAddToPlaylist = true
-            } label: {
-                Label("加入歌单…", systemImage: "music.note.list")
+            // Saving into a playlist writes to the NetEase account keyed by song
+            // id, so it is not offered for QQ tracks.
+            if track.isAccountBound {
+                Button {
+                    showAddToPlaylist = true
+                } label: {
+                    Label("加入歌单…", systemImage: "music.note.list")
+                }
             }
 
             Divider()
@@ -2137,9 +2157,9 @@ private struct MinimalTrackInfoRow: View {
             #endif
 
             Button {
-                Platform.copyToPasteboard(
-                    string: "https://music.163.com/#/song?id=\(track.id)"
-                )
+                // Points at the catalog the song came from; a QQ id inside a
+                // NetEase URL opens an unrelated track.
+                Platform.copyToPasteboard(string: track.shareURL)
                 ToastCenter.shared.show(String(localized: "链接已复制"))
             } label: {
                 Label("复制链接", systemImage: "link")

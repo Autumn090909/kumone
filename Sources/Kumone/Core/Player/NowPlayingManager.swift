@@ -55,7 +55,9 @@ final class NowPlayingManager {
         center.likeCommand.addTarget { [weak player] _ in
             guard let track = player?.currentTrack else { return .noActionableNowPlayingItem }
             Task { @MainActor in
-                await AccountStore.shared.toggleLike(trackID: track.id)
+                // The `track:` overload refuses a QQ track with a message
+                // instead of writing the id to the NetEase account.
+                await AccountStore.shared.toggleLike(track: track)
                 NowPlayingManager.shared.refreshLikeState()
             }
             return .success
@@ -127,8 +129,10 @@ final class NowPlayingManager {
             MPRemoteCommandCenter.shared().likeCommand.isActive = false
             return
         }
+        // A QQ track has no NetEase liked state, and its id must not be matched
+        // against the NetEase list either (see TrackPlatform.isAccountBound).
         MPRemoteCommandCenter.shared().likeCommand.isActive =
-            AccountStore.shared.isLiked(track.id)
+            track.isAccountBound && AccountStore.shared.isLiked(track.id)
     }
 
     func updateMetadata(for track: Track, duration: TimeInterval) {

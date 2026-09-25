@@ -107,24 +107,66 @@ struct HomeView: View {
     @EnvironmentObject private var account: AccountStore
     @EnvironmentObject private var player: PlayerService
     @StateObject private var model = HomeViewModel.shared
+    @ObservedObject private var catalog = CatalogStore.shared
 
     var body: some View {
         ScrollView {
-            switch model.state {
-            case .idle, .loading:
-                loadingBody
-            case .error(let message):
-                ErrorStateView(message: message) {
-                    Task { await model.reload(loggedIn: account.isLoggedIn) }
-                }
-                .frame(minHeight: 400)
-            case .loaded:
-                loadedBody
+            switch catalog.platform {
+            case .netease:
+                neteaseContent
+                    .task(id: account.isLoggedIn) {
+                        await model.load(loggedIn: account.isLoggedIn)
+                    }
+            case .qq:
+                QQHomeView()
             }
         }
         .navigationTitle("推荐")
-        .task(id: account.isLoggedIn) {
-            await model.load(loggedIn: account.isLoggedIn)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                platformSwitcher
+            }
+        }
+    }
+
+    /// The app-wide catalog switcher, Beans-Music style: one control flips the
+    /// 推荐 page's whole content and the search page's catalog together.
+    private var platformSwitcher: some View {
+        Menu {
+            ForEach(TrackPlatform.allCases, id: \.self) { platform in
+                Button {
+                    catalog.setPlatform(platform)
+                } label: {
+                    if platform == catalog.platform {
+                        Label(platform.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(platform.displayName)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(catalog.platform == .netease ? "网易云" : "QQ音乐")
+                    .font(.subheadline.weight(.semibold))
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(Theme.accent)
+        }
+    }
+
+    @ViewBuilder
+    private var neteaseContent: some View {
+        switch model.state {
+        case .idle, .loading:
+            loadingBody
+        case .error(let message):
+            ErrorStateView(message: message) {
+                Task { await model.reload(loggedIn: account.isLoggedIn) }
+            }
+            .frame(minHeight: 400)
+        case .loaded:
+            loadedBody
         }
     }
 

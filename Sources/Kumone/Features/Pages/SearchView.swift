@@ -24,8 +24,6 @@ final class SearchViewModel: ObservableObject {
         }
     }
 
-    private static let platformDefaultsKey = "kumone.search.platform"
-
     var query: String
     @Published var platform: TrackPlatform
     @Published var tab: Tab = .all
@@ -38,10 +36,10 @@ final class SearchViewModel: ObservableObject {
 
     init(query: String) {
         self.query = query
-        // Which catalog you search is a preference rather than a per-search
-        // choice, so it survives relaunch.
-        let stored = UserDefaults.standard.string(forKey: Self.platformDefaultsKey)
-        let restored = stored.flatMap(TrackPlatform.init(rawValue:)) ?? .netease
+        // Which catalog you search is the app-wide catalog choice rather than
+        // a per-search choice: the 推荐 page's switcher and this page share
+        // one store, and it survives relaunch.
+        let restored = CatalogStore.shared.platform
         self.platform = restored
         self.tab = Self.tabs(for: restored).first ?? .songs
     }
@@ -49,7 +47,7 @@ final class SearchViewModel: ObservableObject {
     func setPlatform(_ newPlatform: TrackPlatform) {
         guard newPlatform != platform else { return }
         platform = newPlatform
-        UserDefaults.standard.set(newPlatform.rawValue, forKey: Self.platformDefaultsKey)
+        CatalogStore.shared.setPlatform(newPlatform)
         // Results belong to the catalog that produced them, so switching starts
         // over rather than mixing QQ songs into a NetEase list.
         resetResults()
@@ -118,6 +116,8 @@ struct SearchView: View {
     @StateObject private var model: SearchViewModel
     @State private var searchText: String = ""
     @EnvironmentObject private var player: PlayerService
+    /// Observed only so a switch made on the 推荐 page reaches this page too.
+    @ObservedObject private var catalog = CatalogStore.shared
 
     init(query: String) {
         _model = StateObject(wrappedValue: SearchViewModel(query: query))
@@ -184,6 +184,10 @@ struct SearchView: View {
         // would not fire; the model has already dropped its results by then.
         .onChange(of: model.platform) { _ in
             Task { await model.load(tab: model.tab) }
+        }
+        // A switch made on the 推荐 page flips this page's catalog as well.
+        .onChange(of: catalog.platform) { newPlatform in
+            model.setPlatform(newPlatform)
         }
     }
 

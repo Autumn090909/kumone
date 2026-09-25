@@ -89,6 +89,9 @@ enum Destination: Hashable {
     case qqAlbum(String)
     case qqArtist(mid: String, name: String)
     case qqPlaylist(String)
+    /// A QQ ranking board (榜单). The cover travels along so the detail page
+    /// can render a header without a second round trip.
+    case qqToplist(topID: Int, name: String, cover: String?)
 }
 
 extension Array where Element == Destination {
@@ -133,6 +136,8 @@ struct DestinationsModifier: ViewModifier {
                                      qqArtistMid: mid, qqArtistName: name)
                 case .qqPlaylist(let dissID):
                     PlaylistDetailView(playlistID: 0, platform: .qq, qqDissID: dissID)
+                case .qqToplist(let topID, let name, let cover):
+                    QQToplistDetailView(topID: topID, name: name, cover: cover)
                 }
             }
             .playerContentInset()

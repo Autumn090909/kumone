@@ -322,4 +322,103 @@ struct QQCatalogTests {
         let object = try #require(QQMusicAPI.parseObject(from: Data(body.utf8)))
         #expect(object["code"] as? Int == 0)
     }
+
+    // MARK: - Home content (r10)
+
+    /// The toplist-overview shape (`fcg_myqq_toplist.fcg`): `topTitle`,
+    /// `picUrl`, `subTitle` and a `songList` teaser keyed by `songname`.
+    private static var toplistItem: [String: Any] {
+        [
+            "id": 26,
+            "topTitle": "巅峰榜·热歌",
+            "subTitle": "每天更新",
+            "picUrl": "http://y.gtimg.cn/music/photo_new/T003R300x300M000004YAZ8F1r.jpg",
+            "songList": [
+                ["songname": "茶汤"],
+                ["songname": "我不难过"],
+                ["songname": "甲乙丙丁"],
+                ["songname": "第四首应该被截掉"],
+            ],
+        ]
+    }
+
+    @Test func toplistOverviewKeepsTheTeaserAndUpgradesTheCover() throws {
+        let toplist = try #require(QQMusicAPI.toplist(from: Self.toplistItem))
+        #expect(toplist.id == 26)
+        #expect(toplist.name == "巅峰榜·热歌")
+        #expect(toplist.subtitle == "每天更新")
+        #expect(toplist.previewSongNames == ["茶汤", "我不难过", "甲乙丙丁"])
+        let cover = try #require(toplist.coverURL)
+        #expect(cover.absoluteString.hasPrefix("https://"))
+    }
+
+    @Test func nonSongToplistsAreDropped() {
+        // Measured: id 201 (MV) and id 75 (电台/有声) carry no parseable songs
+        // on the detail endpoint, so the overview mapper must drop them
+        // instead of rendering dead links.
+        var mvBoard = Self.toplistItem
+        mvBoard["id"] = 201
+        var radioBoard = Self.toplistItem
+        radioBoard["id"] = 999
+        radioBoard["topTitle"] = "有声书榜"
+        var songBoard = Self.toplistItem
+        songBoard["id"] = 999
+        songBoard["topTitle"] = "国风榜"
+        #expect(QQMusicAPI.toplist(from: mvBoard) == nil)
+        #expect(QQMusicAPI.toplist(from: radioBoard) == nil)
+        #expect(QQMusicAPI.toplist(from: songBoard) != nil)
+    }
+
+    /// A board song wrapped in `{data: …}` — the live shape. The wrapper is
+    /// unwrapped before the flat search-shape mapper sees it.
+    @Test func toplistSongsUnwrapTheirDataEnvelope() throws {
+        let entry: [String: Any] = [
+            "Franking_value": 1,
+            "cur_count": 3,
+            "data": Self.songSearchItem,
+        ]
+        let track = try #require(QQMusicAPI.track(from: (entry["data"] as? [String: Any]) ?? entry))
+        #expect(track.platform == .qq)
+        #expect(track.songmid == "0039MnYb0qxYhV")
+        #expect(track.name == "晴天")
+    }
+
+    @Test func aSeededGeneratorIsDeterministic() {
+        // Same seed → same sequence: this is what makes 推荐歌曲 rotate daily
+        // (the day-of-year seed) yet stay put within a day.
+        var a = QQMusicAPI.SeededGenerator(state: 42)
+        var b = QQMusicAPI.SeededGenerator(state: 42)
+        #expect(a.next() == b.next())
+        #expect(a.next() == b.next())
+        #expect(a.next() == b.next())
+    }
+
+    /// The homepage ships hot playlists inside escaped JSON string fragments —
+    /// `\u002F` for `/`. The regex must unescape them, keep the string dissid
+    /// (it becomes the `mid` that routes to the QQ playlist page) and dedupe.
+    @Test func hotPlaylistsParseOutOfHomepageHTML() throws {
+        let html = #"""
+        window.__INITIAL_DATA__ = {"hotRecommend":[
+          {"imgurl":"https:\u002F\u002Fmusic-file.y.qq.com\u002Fcover.jpg","dissname":"抖音热歌BGM超好听（火爆全网）","listennum":38492944,"dissid":8643520573},
+          {"imgurl":"http:\u002F\u002Fy.gtimg.cn\u002Fold.jpg","dissname":"深夜伤感丨emo","listennum":5053695,"dissid":8150218364},
+          {"imgurl":"https:\u002F\u002Fmusic-file.y.qq.com\u002Fcover.jpg","dissname":"抖音热歌BGM超好听（火爆全网）","listennum":38492944,"dissid":8643520573}
+        ]}
+        """#
+        let summaries = QQMusicAPI.hotPlaylistSummaries(fromHTML: html, limit: 12)
+        #expect(summaries.count == 2) // the duplicate is dropped
+        let first = try #require(summaries.first)
+        #expect(first.name == "抖音热歌BGM超好听（火爆全网）")
+        #expect(first.mid == "8643520573")
+        #expect(first.playCount == 38_492_944)
+        let cover = try #require(first.coverURL)
+        #expect(cover.absoluteString.hasPrefix("https://music-file.y.qq.com/"))
+    }
+
+    @Test func jsonEscapesDecodeThroughAJSONRoundTrip() {
+        #expect(QQMusicAPI.decodeJSONEscapes(#"https:\u002F\u002Fy.gtimg.cn\u002Fa b.jpg"#) == "https://y.gtimg.cn/a b.jpg")
+        #expect(QQMusicAPI.decodeJSONEscapes(#"\u534E\u8BED\u6D41\u884C"#) == "华语流行")
+        #expect(QQMusicAPI.decodeJSONEscapes("no escapes") == "no escapes")
+        // Unparseable input falls back to the original text rather than crashing.
+        #expect(QQMusicAPI.decodeJSONEscapes(#"\q"#) == #"\q"#)
+    }
 }

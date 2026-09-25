@@ -66,6 +66,16 @@ enum QQMusicAPI {
     /// Timed lyrics, plain text when `nobase64=1`.
     private static let lyricEndpoint =
         "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg"
+    /// Ranking-board overview (榜单总览). Logged out, no `musicu` involved.
+    private static let toplistOverviewEndpoint =
+        "https://c.y.qq.com/v8/fcg-bin/fcg_myqq_toplist.fcg"
+    /// Songs of one ranking board (`topid` selects the board).
+    private static let toplistDetailEndpoint =
+        "https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg"
+    /// The QQ Music homepage. Its server-rendered `__INITIAL_DATA__` ships the
+    /// hot-playlist data with the page itself — one request, no throttled
+    /// `musicu` round trip.
+    private static let homepageURL = "https://y.qq.com/"
 
     /// QQ returns an empty body to its own app's default client UA, and the
     /// `Referer` is not optional — without it the endpoint replies with an
@@ -476,6 +486,176 @@ enum QQMusicAPI {
         return decode(LyricResponse.self, from: shaped)
     }
 
+    // MARK: - Home content (榜单 / 推荐歌曲 / 热门歌单)
+
+    /// One ranking board from the overview endpoint.
+    struct Toplist: Identifiable, Hashable {
+        let id: Int
+        let name: String
+        let subtitle: String?
+        /// Up to three song names the overview bundles in as a teaser.
+        let previewSongNames: [String]
+        let coverURL: URL?
+    }
+
+    /// The ranking-board overview: `data.topList[]` with `topTitle` / `picUrl`
+    /// and a three-song teaser per board. Measured 25 boards, no login.
+    static func toplists() async throws -> [Toplist] {
+        guard var components = URLComponents(string: toplistOverviewEndpoint) else {
+            throw QQError.invalidURL
+        }
+        components.queryItems = [URLQueryItem(name: "format", value: "json")]
+        guard let url = components.url else { throw QQError.invalidURL }
+        let object = try await getJSON(url)
+        let data = object["data"] as? [String: Any] ?? object
+        let list = data["topList"] as? [[String: Any]] ?? []
+        return list.compactMap(toplist(from:))
+    }
+
+    /// Internal for tests — field names move, and a wrong one here silently
+    /// empties the whole 榜单 shelf.
+    static func toplist(from item: [String: Any]) -> Toplist? {
+        guard let id = intValue(item["id"]), id > 0 else { return nil }
+        let name = stringValue(item["topTitle"]) ?? stringValue(item["title"]) ?? ""
+        guard !name.isEmpty, !isNonSongToplist(id: id, name: name) else { return nil }
+        let previews = ((item["songList"] as? [[String: Any]]) ?? [])
+            .compactMap { stringValue($0["songname"]) }
+        let cover = (stringValue(item["picUrl"]) ?? stringValue(item["headPicUrl"]))
+            .flatMap(httpsURL)
+            .flatMap(URL.init(string:))
+        return Toplist(
+            id: id,
+            name: name,
+            subtitle: stringValue(item["subTitle"]),
+            previewSongNames: Array(previews.prefix(3)),
+            coverURL: cover
+        )
+    }
+
+    /// The overview mixes in MV / audiobook / radio boards whose detail
+    /// endpoint carries no parseable songs — measured `id 201` and `id 75`
+    /// return empty song lists — so they are filtered rather than rendered as
+    /// dead links.
+    private static func isNonSongToplist(id: Int, name: String) -> Bool {
+        if id == 201 || id == 75 { return true }
+        let lowered = name.lowercased()
+        return lowered.contains("mv") || name.contains("有声") || name.contains("电台")
+    }
+
+    /// Songs of one board. Entries arrive as `{data: {…song…}}`, and the inner
+    /// shape is exactly the flat search shape (`songid` / `songmid` / `songname`
+    /// / `singer[]` / `albummid` / `interval` in seconds, `strMediaMid`) —
+    /// measured live — so `track(from:)` maps it directly.
+    static func toplistSongs(topID: Int, limit: Int = 100) async throws -> [Track] {
+        guard var components = URLComponents(string: toplistDetailEndpoint) else {
+            throw QQError.invalidURL
+        }
+        components.queryItems = [
+            URLQueryItem(name: "format", value: "json"),
+            URLQueryItem(name: "page", value: "detail"),
+            URLQueryItem(name: "type", value: "top"),
+            URLQueryItem(name: "topid", value: String(topID)),
+            URLQueryItem(name: "song_begin", value: "0"),
+            URLQueryItem(name: "song_num", value: String(max(limit, 1))),
+        ]
+        guard let url = components.url else { throw QQError.invalidURL }
+        let object = try await getJSON(url)
+        let list = object["songlist"] as? [[String: Any]] ?? []
+        return list.compactMap { entry in
+            track(from: (entry["data"] as? [String: Any]) ?? entry)
+        }
+    }
+
+    /// "推荐歌曲" for a logged-out visitor.
+    ///
+    /// QQ has no logged-out personalised feed, so this is assembled the way
+    /// Beans Music does it: the hot / new / surging boards (26 / 27 / 62)
+    /// mixed and deduplicated, then shuffled with a day-seeded generator so
+    /// the mix rotates daily but stays put within a day.
+    static func recommendedSongs(limit: Int = 30) async throws -> [Track] {
+        let day = Calendar(identifier: .gregorian)
+            .ordinality(of: .day, in: .year, for: Date()) ?? 0
+        var songs: [Track] = []
+        var seen = Set<String>()
+        let per = max(8, (limit + 2) / 3)
+        for topID in [26, 27, 62] {
+            guard let list = try? await toplistSongs(topID: topID, limit: per) else { continue }
+            for song in list where seen.insert(song.songmid ?? song.name).inserted {
+                songs.append(song)
+            }
+        }
+        var rng = SeededGenerator(state: UInt64(truncatingIfNeeded: day) &* 2_654_435_761)
+        songs.shuffle(using: &rng)
+        return Array(songs.prefix(limit))
+    }
+
+    /// Deterministic LCG — `RandomNumberGenerator` needs no more than this for
+    /// "shuffle differently tomorrow, identically today".
+    struct SeededGenerator: RandomNumberGenerator {
+        private var state: UInt64
+        init(state: UInt64) { self.state = state &* 0x9E37_79B9_7F4A_7C15 &+ 1 }
+        mutating func next() -> UInt64 {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return state
+        }
+    }
+
+    /// Hot playlists scraped from the homepage's server-rendered data.
+    ///
+    /// The `musicu` `RecommendPlaylist` module throttles hard (the same
+    /// `code 2001` behaviour as search), while this data ships with the page —
+    /// the homepage itself has to render it. Covers arrive inside escaped JSON
+    /// string fragments (`\u002F` for `/`), hence `decodeJSONEscapes`.
+    /// Internal for tests; the fetching wrapper is `hotPlaylists(limit:)`.
+    static func hotPlaylistSummaries(fromHTML html: String, limit: Int) -> [PlaylistSummary] {
+        let pattern = #""imgurl"\s*:\s*"([^"]+)"\s*,\s*"dissname"\s*:\s*"([^"]*)"\s*,\s*"listennum"\s*:\s*([0-9]+)\s*,\s*"dissid"\s*:\s*([0-9]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(html.startIndex..., in: html)
+        var summaries: [PlaylistSummary] = []
+        var seen = Set<Int>()
+
+        for match in regex.matches(in: html, range: range) {
+            if summaries.count >= max(1, limit) { break }
+            guard let imageRange = Range(match.range(at: 1), in: html),
+                  let nameRange = Range(match.range(at: 2), in: html),
+                  let playsRange = Range(match.range(at: 3), in: html),
+                  let idRange = Range(match.range(at: 4), in: html)
+            else { continue }
+
+            let dissID = String(html[idRange])
+            let name = decodeJSONEscapes(String(html[nameRange]))
+            guard let id = Int(dissID), id > 0, !name.isEmpty, seen.insert(id).inserted
+            else { continue }
+
+            var shaped: [String: Any] = ["id": id, "name": name, "mid": dissID]
+            if let cover = httpsURL(decodeJSONEscapes(String(html[imageRange]))) {
+                shaped["coverImgUrl"] = cover
+            }
+            if let plays = Int(html[playsRange]) {
+                shaped["playCount"] = plays
+            }
+            if let summary = decode(PlaylistSummary.self, from: shaped) {
+                summaries.append(summary)
+            }
+        }
+        return summaries
+    }
+
+    static func hotPlaylists(limit: Int = 12) async throws -> [PlaylistSummary] {
+        guard let url = URL(string: homepageURL) else { throw QQError.invalidURL }
+        let (data, response) = try await session.data(from: url)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            log.error("QQ homepage HTTP \(http.statusCode, privacy: .public)")
+            throw QQError.malformedResponse
+        }
+        guard let html = String(data: data, encoding: .utf8) else {
+            throw QQError.malformedResponse
+        }
+        let summaries = hotPlaylistSummaries(fromHTML: html, limit: limit)
+        guard !summaries.isEmpty else { throw QQError.malformedResponse }
+        return summaries
+    }
+
     // MARK: - Parsing: tracks
 
     /// Field names here are the ones the search endpoint actually returned when
@@ -815,6 +995,21 @@ enum QQMusicAPI {
             result = result.replacingOccurrences(of: entity, with: replacement)
         }
         return result
+    }
+
+    /// Unescapes the `\u002F`-style JSON string fragments the homepage embeds
+    /// in its HTML. A JSON round trip rather than hand-rolled scanning, so
+    /// `\\`, `\"`, `\n` and surrogate pairs decode exactly like a JSON parser
+    /// would. Callers pass captures of `[^"]+`, which cannot contain raw
+    /// quotes, so the text can be wrapped and re-parsed safely.
+    static func decodeJSONEscapes(_ text: String) -> String {
+        guard text.contains("\\") else { return text }
+        let wrapped = Data("\"\(text)\"".utf8)
+        if let object = try? JSONSerialization.jsonObject(with: wrapped, options: [.fragmentsAllowed]),
+           let string = object as? String {
+            return string
+        }
+        return text
     }
 
     private static func nestedList(_ object: [String: Any], path: [String]) -> [[String: Any]]? {

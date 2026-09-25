@@ -411,7 +411,7 @@ struct QQCatalogTests {
         #expect(first.mid == "8643520573")
         #expect(first.playCount == 38_492_944)
         let cover = try #require(first.coverURL)
-        #expect(cover.absoluteString.hasPrefix("https://music-file.y.qq.com/"))
+        #expect(cover.hasPrefix("https://music-file.y.qq.com/"))
     }
 
     @Test func jsonEscapesDecodeThroughAJSONRoundTrip() {

@@ -397,6 +397,171 @@ struct LXCustomSourceTests {
         #expect(resolved?.url.absoluteString == "https://example.invalid/aggregator/wy/7/320k")
     }
 
+    // MARK: - A second catalog (QQ Music)
+
+    /// A QQ track has to be asked of the script under LX's `tx` key, and it has
+    /// to carry the **string** mid rather than the numeric id — no published
+    /// aggregator accepts the numeric one.
+    @MainActor
+    @Test func runtimeServesAQQTrackUnderTheTXKeyWithTheStringMid() async throws {
+        let runtime = try LXScriptRuntime(scriptKey: "qq-echo", script: Self.qqEchoScript)
+        defer { runtime.shutdown() }
+
+        try await runtime.initialize()
+        #expect(runtime.declaredSources.map(\.key) == ["tx"])
+
+        let resolved = try await runtime.musicURL(for: Self.makeQQTrack(), requestedQuality: .exhigh)
+
+        // The echoing script renders source / songmid / strMediaMid / albumMid.
+        // `strMediaMid` is expected to fall back to the mid: QQ search does not
+        // return `file.media_mid`, and a source handed nothing under those keys
+        // requests a blank media id and comes back empty.
+        #expect(
+            resolved?.url.absoluteString
+                == "https://example.invalid/tx/0039MnYb0qxYhV/0039MnYb0qxYhV/000MkMni19ClKG.mp3"
+        )
+    }
+
+    /// The guards are per-platform, in both directions. A NetEase-only script
+    /// must fail loudly on a QQ track rather than quietly resolving a different
+    /// song, and a QQ-only script must not pretend to serve NetEase either.
+    @MainActor
+    @Test func runtimeRejectsACrossPlatformMismatch() async throws {
+        let netEaseOnly = try LXScriptRuntime(scriptKey: "echo", script: Self.echoScript)
+        defer { netEaseOnly.shutdown() }
+        try await netEaseOnly.initialize()
+
+        await #expect(throws: LXScriptRuntimeError.self) {
+            _ = try await netEaseOnly.musicURL(for: Self.makeQQTrack(), requestedQuality: .standard)
+        }
+
+        let qqOnly = try LXScriptRuntime(scriptKey: "qq-echo", script: Self.qqEchoScript)
+        defer { qqOnly.shutdown() }
+        try await qqOnly.initialize()
+
+        let netEaseTrack = try Self.makeTrack(id: 7, name: "歌", artist: "人", durationMS: 100_000)
+        await #expect(throws: LXScriptRuntimeError.self) {
+            _ = try await qqOnly.musicURL(for: netEaseTrack, requestedQuality: .standard)
+        }
+    }
+
+    // MARK: - Platform identity on the model
+
+    /// Everything persisted before QQ existed is NetEase's, so the field has to
+    /// default rather than fail — otherwise upgrading the app would lose
+    /// favourites, play history and cached metadata in one go.
+    @Test func aTrackWithoutAPlatformDecodesAsNetEase() throws {
+        let json = """
+        {"id": 1, "name": "歌", "ar": [], "al": {"id": 0, "name": "", "picUrl": null}, "dt": 1000}
+        """
+        let track = try JSONDecoder().decode(Track.self, from: Data(json.utf8))
+
+        #expect(track.platform == .netease)
+        #expect(track.songmid == nil)
+        #expect(track.albumMid == nil)
+    }
+
+    /// Favourites and history are stored as encoded `Track`s, so a foreign track
+    /// has to survive a round trip with its mid intact.
+    @Test func aQQTrackSurvivesEncodeAndDecode() throws {
+        let original = Self.makeQQTrack()
+        let restored = try JSONDecoder().decode(
+            Track.self,
+            from: try JSONEncoder().encode(original)
+        )
+
+        #expect(restored == original)
+        #expect(restored.platform == .qq)
+        #expect(restored.songmid == "0039MnYb0qxYhV")
+    }
+
+    /// A NetEase track must keep encoding exactly the keys earlier builds wrote,
+    /// so metadata they cached stays readable.
+    @Test func aNetEaseTrackDoesNotEncodeAPlatformKey() throws {
+        let track = try Self.makeTrack(id: 1, name: "歌", artist: "人", durationMS: 1000)
+        let object = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(track)
+        ) as? [String: Any]
+
+        #expect(object?["platform"] == nil)
+        #expect(object?["songmid"] == nil)
+    }
+
+    /// LX's platform codes are the interface to published scripts, so they are
+    /// pinned: renaming one would silently break every source in the wild.
+    @Test func platformKeysAreTheOnesPublishedScriptsExpect() {
+        #expect(TrackPlatform.netease.lxSourceKey == "wy")
+        #expect(TrackPlatform.qq.lxSourceKey == "tx")
+    }
+
+    /// QQ's artwork CDN carries the size in its URL template, so NetEase's
+    /// `?param=` convention must not be bolted onto it.
+    @Test func qqCoverURLsDoNotGetTheNetEaseResizeParameter() {
+        let qq = "https://y.gtimg.cn/music/photo_new/T002R300x300M000000MkMni19ClKG.jpg"
+        #expect(qq.resizedImageURL(512)?.absoluteString == qq)
+
+        let netEase = "http://p1.music.126.net/abc.jpg"
+        #expect(
+            netEase.resizedImageURL(100)?.absoluteString
+                == "https://p1.music.126.net/abc.jpg?param=100y100"
+        )
+    }
+
+    // MARK: - QQ search parsing
+
+    /// Field names in this fixture were copied from a live response, because
+    /// they are not documented and a wrong one fails silently as a blank album
+    /// or artist: `songname` / `albumname` / `albummid`, no underscores, and
+    /// `interval` in **seconds**.
+    @Test func qqSearchResponseMapsOntoATrack() throws {
+        let item: [String: Any] = [
+            "songid": 97773,
+            "songmid": "0039MnYb0qxYhV",
+            "songname": "晴天",
+            "albumid": 8220,
+            "albummid": "000MkMni19ClKG",
+            "albumname": "叶惠美",
+            "interval": 269,
+            "singer": [["id": 4558, "mid": "0025NhlN2yWrP4", "name": "周杰伦"]],
+        ]
+
+        let track = try #require(QQMusicAPI.track(from: item))
+
+        #expect(track.platform == .qq)
+        #expect(track.id == 97773)
+        #expect(track.songmid == "0039MnYb0qxYhV")
+        #expect(track.albumMid == "000MkMni19ClKG")
+        #expect(track.durationMS == 269_000)   // seconds in, milliseconds out
+        #expect(track.artistNames == "周杰伦")
+        #expect(track.album.name == "叶惠美")
+        // Deliberately not copied from QQ's paywall — see `QQMusicAPI.track`.
+        #expect(track.fee == 0)
+    }
+
+    /// An entry with no mid cannot be played by anything, so it is dropped here
+    /// rather than shown as a row that fails on tap.
+    @Test func qqSearchDropsEntriesWithoutASongMid() {
+        #expect(QQMusicAPI.track(from: ["songid": 1, "songmid": "", "songname": "x"]) == nil)
+        #expect(QQMusicAPI.track(from: ["songid": 0, "songmid": "abc", "songname": "x"]) == nil)
+    }
+
+    /// QQ's older endpoints wrap their JSON in a JS call, and some answer with a
+    /// `while(1);` anti-hijacking prefix. Both forms have to be unwrapped or the
+    /// whole catalog reads as empty.
+    @Test func qqParsingUnwrapsJSONPAndWhilePrefixes() throws {
+        let payloads: [Data] = [
+            Data(#"{"a":1}"#.utf8),
+            Data(#"while(1);{"a":1}"#.utf8),
+            Data(#"callback({"a":1});"#.utf8),
+        ]
+
+        for payload in payloads {
+            let object = try #require(QQMusicAPI.parseObject(from: payload))
+            #expect(object["a"] as? Int == 1)
+        }
+        #expect(QQMusicAPI.parseObject(from: Data("not json".utf8)) == nil)
+    }
+
     // MARK: - The store
 
     @MainActor
@@ -452,6 +617,58 @@ struct LXCustomSourceTests {
     }
 
     // MARK: - Fixtures
+
+    /// A QQ-only source that echoes back what it was handed, so one assertion
+    /// covers the platform key, the string mid and the media-mid aliases.
+    private static let qqEchoScript = """
+    /**
+     * @name QQ 回声
+     * @author unit-test
+     */
+
+    const { EVENT_NAMES, on, send } = globalThis.lx
+
+    on(EVENT_NAMES.request, (payload) => {
+      if (payload.action !== 'musicUrl') return Promise.resolve(null)
+      const info = payload.info.musicInfo
+      return Promise.resolve({
+        url: 'https://example.invalid/' + payload.source + '/'
+           + info.songmid + '/' + info.strMediaMid + '/' + info.albumMid + '.mp3',
+        quality: payload.info.type,
+      })
+    })
+
+    send(EVENT_NAMES.inited, {
+      status: true,
+      sources: {
+        tx: {
+          name: 'QQ音乐',
+          type: 'music',
+          actions: ['musicUrl'],
+          qualitys: ['128k', '320k'],
+        },
+      },
+    })
+    """
+
+    /// Builds a QQ track directly rather than by decoding, so the test is about
+    /// the runtime's handling of the fields and not about the search mapping.
+    private static func makeQQTrack(
+        songmid: String = "0039MnYb0qxYhV",
+        albumMid: String = "000MkMni19ClKG"
+    ) -> Track {
+        Track(
+            id: 97773,
+            name: "晴天",
+            artists: [ArtistRef(id: 4558, name: "周杰伦")],
+            album: AlbumRef(id: 8220, name: "叶惠美", picUrl: nil),
+            durationMS: 269_000,
+            platform: .qq,
+            songmid: songmid,
+            mediaMid: nil,
+            albumMid: albumMid
+        )
+    }
 
     /// A script that needs no network, so the whole runtime can be exercised
     /// offline.

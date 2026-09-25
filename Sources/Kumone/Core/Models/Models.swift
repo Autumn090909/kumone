@@ -440,9 +440,20 @@ enum Formatters {
 extension String {
     /// NetEase image CDN resize convention: `<picUrl>?param=<W>y<H>`.
     /// Also upgrades `http:` to `https:`.
+    ///
+    /// QQ's artwork CDN (`y.gtimg.cn`) does not follow that convention — its URL
+    /// template already carries the size, `T002R<W>x<H>M000<albumMid>.jpg` — so
+    /// the query is only appended for hosts that understand it. Appending it
+    /// everywhere meant every QQ cover was requested with a meaningless
+    /// parameter bolted on.
     func resizedImageURL(_ size: Int) -> URL? {
         var s = replacingOccurrences(of: "http://", with: "https://")
-        s += s.contains("?") ? "&param=\(size)y\(size)" : "?param=\(size)y\(size)"
+        if !Self.sizeInTemplateHosts.contains(where: s.contains) {
+            s += s.contains("?") ? "&param=\(size)y\(size)" : "?param=\(size)y\(size)"
+        }
         return URL(string: s)
     }
+
+    /// Artwork CDNs whose size is part of the URL template rather than a query.
+    private static let sizeInTemplateHosts = ["gtimg.cn"]
 }

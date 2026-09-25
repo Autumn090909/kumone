@@ -12,7 +12,20 @@ final class SearchViewModel: ObservableObject {
         var id: String { rawValue }
     }
 
+    /// QQ's catalog is only wired up for song search so far. Offering its other
+    /// tabs would mean tabs that always come back empty, so the set is narrowed
+    /// per platform instead of pretending all five work everywhere.
+    static func tabs(for platform: TrackPlatform) -> [Tab] {
+        switch platform {
+        case .netease: return Tab.allCases
+        case .qq: return [.songs]
+        }
+    }
+
+    private static let platformDefaultsKey = "kumone.search.platform"
+
     var query: String
+    @Published var platform: TrackPlatform
     @Published var tab: Tab = .all
     @Published var songs: [Track] = []
     @Published var artists: [ArtistSummary] = []
@@ -23,11 +36,32 @@ final class SearchViewModel: ObservableObject {
 
     init(query: String) {
         self.query = query
+        // Which catalog you search is a preference rather than a per-search
+        // choice, so it survives relaunch.
+        let stored = UserDefaults.standard.string(forKey: Self.platformDefaultsKey)
+        let restored = stored.flatMap(TrackPlatform.init(rawValue:)) ?? .netease
+        self.platform = restored
+        self.tab = Self.tabs(for: restored).first ?? .songs
+    }
+
+    func setPlatform(_ newPlatform: TrackPlatform) {
+        guard newPlatform != platform else { return }
+        platform = newPlatform
+        UserDefaults.standard.set(newPlatform.rawValue, forKey: Self.platformDefaultsKey)
+        // Results belong to the catalog that produced them, so switching starts
+        // over rather than mixing QQ songs into a NetEase list.
+        resetResults()
+        let available = Self.tabs(for: newPlatform)
+        if !available.contains(tab) { tab = available.first ?? .songs }
     }
 
     func setQuery(_ newQuery: String) {
         guard newQuery != query else { return }
         query = newQuery
+        resetResults()
+    }
+
+    private func resetResults() {
         loadedTabs.removeAll()
         songs = []
         artists = []
@@ -43,6 +77,19 @@ final class SearchViewModel: ObservableObject {
         defer { isLoading = false }
         loadedTabs.insert(tab)
 
+        switch platform {
+        case .qq:
+            // Song search is the only QQ call wired up; the other tabs are not
+            // offered (see `tabs(for:)`), so this is unreachable rather than
+            // silently dropped.
+            guard tab == .songs else { return }
+            songs = (try? await QQMusicAPI.searchSongs(trimmed, limit: 100)) ?? songs
+        case .netease:
+            await loadNetease(tab: tab, keyword: trimmed)
+        }
+    }
+
+    private func loadNetease(tab: Tab, keyword trimmed: String) async {
         switch tab {
         case .all:
             async let songsTask = try? NeteaseAPI.search(trimmed, type: .songs, limit: 12)
@@ -79,15 +126,22 @@ struct SearchView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if !searchText.trimmingCharacters(in: .whitespaces).isEmpty {
-                    Picker("", selection: $model.tab) {
-                        ForEach(SearchViewModel.Tab.allCases) { tab in
-                            Text(LocalizedStringKey(tab.rawValue)).tag(tab)
+                    platformPicker
+                        .padding(.horizontal, Theme.Layout.contentInset)
+                        .padding(.top, 12)
+
+                    // A single tab is not a choice, so the control is hidden
+                    // rather than shown holding one option.
+                    if availableTabs.count > 1 {
+                        Picker("", selection: $model.tab) {
+                            ForEach(availableTabs) { tab in
+                                Text(LocalizedStringKey(tab.rawValue)).tag(tab)
+                            }
                         }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .padding(.horizontal, Theme.Layout.contentInset)
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .padding(.horizontal, Theme.Layout.contentInset)
-                    .padding(.top, 12)
 
                     if model.isLoading && currentEmpty {
                         ProgressView()
@@ -124,6 +178,28 @@ struct SearchView: View {
         .task(id: model.tab) {
             await model.load(tab: model.tab)
         }
+        // Switching platform usually keeps the same tab, so `task(id:)` above
+        // would not fire; the model has already dropped its results by then.
+        .onChange(of: model.platform) { _ in
+            Task { await model.load(tab: model.tab) }
+        }
+    }
+
+    private var availableTabs: [SearchViewModel.Tab] {
+        SearchViewModel.tabs(for: model.platform)
+    }
+
+    private var platformPicker: some View {
+        Picker("", selection: Binding<TrackPlatform>(
+            get: { model.platform },
+            set: { model.setPlatform($0) }
+        )) {
+            ForEach(TrackPlatform.allCases, id: \.self) { platform in
+                Text(platform.displayName).tag(platform)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
     }
 
     private var emptySearchPrompt: some View {

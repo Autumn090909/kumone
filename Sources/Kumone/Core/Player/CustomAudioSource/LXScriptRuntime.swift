@@ -55,7 +55,10 @@ enum LXScriptRuntimeError: LocalizedError {
     case initializationFailed(String)
     case initializationTimedOut
     case notInitialized
-    case noNetEaseSource
+    /// The script initialised fine but does not declare the platform the track
+    /// came from, so there is nobody to ask. Generalised from an earlier
+    /// NetEase-only case once QQ tracks started reaching this code.
+    case noSourceForPlatform(TrackPlatform)
     case unsupportedAction(String)
     case scriptFailure(String)
     case invalidReturnedURL(String)
@@ -68,8 +71,8 @@ enum LXScriptRuntimeError: LocalizedError {
             return String(localized: "脚本初始化超时（未收到 inited 事件）")
         case .notInitialized:
             return String(localized: "脚本尚未初始化")
-        case .noNetEaseSource:
-            return String(localized: "该脚本没有声明网易云（wy）音源")
+        case .noSourceForPlatform(let platform):
+            return String(localized: "该脚本没有声明\(platform.displayName)（\(platform.lxSourceKey)）音源")
         case .unsupportedAction(let action):
             return String(localized: "该脚本不支持 \(action) 操作")
         case .scriptFailure(let detail):
@@ -99,8 +102,10 @@ final class LXScriptRuntime {
     /// a script that makes several hops.
     private static let actionTimeout: TimeInterval = 25
 
-    /// LX's key for 网易云音乐.
-    private static let netEaseSourceKey = "wy"
+    /// The LX platform key a request is made against now depends on which
+    /// catalog the track came from — see `TrackPlatform.lxSourceKey`. This used
+    /// to be a single `netEaseSourceKey = "wy"` constant, which is why a script
+    /// that only declared `tx` used to be rejected outright.
 
     let scriptKey: String
     let metadata: LXScriptMetadata
@@ -253,10 +258,15 @@ final class LXScriptRuntime {
 
     // MARK: - Acting on a track
 
+    /// - Note: the platform key comes from the track, so a QQ track is asked of
+    ///   the script under `tx` and a NetEase one under `wy`. A script that
+    ///   declares only one of the two still serves that one; it is only an
+    ///   error when the script has nothing to say about the track's platform.
     func musicURL(for track: Track, requestedQuality: AudioQuality) async throws -> LXMusicURL? {
         guard isInitialized else { throw LXScriptRuntimeError.notInitialized }
-        guard let declared = declaredSources.first(where: { $0.key == Self.netEaseSourceKey }) else {
-            throw LXScriptRuntimeError.noNetEaseSource
+        let sourceKey = track.platform.lxSourceKey
+        guard let declared = declaredSources.first(where: { $0.key == sourceKey }) else {
+            throw LXScriptRuntimeError.noSourceForPlatform(track.platform)
         }
         guard declared.actions.contains("musicUrl") else {
             throw LXScriptRuntimeError.unsupportedAction("musicUrl")
@@ -264,7 +274,7 @@ final class LXScriptRuntime {
 
         let quality = LXQuality.select(from: declared.qualities, for: requestedQuality)
         let encoded = try await runAction(
-            sourceKey: Self.netEaseSourceKey,
+            sourceKey: sourceKey,
             action: "musicUrl",
             quality: quality,
             track: track
@@ -322,13 +332,11 @@ final class LXScriptRuntime {
         }
     }
 
-    /// The `musicInfo` LX hands a script. NetEase sources in the wild read `id`,
-    /// `songmid`, `name` and `interval`, so all of them are populated even
-    /// though they carry the same track.
+    /// The `musicInfo` LX hands a script, shaped by the track's platform.
     ///
-    /// Fields that belong to *other* platforms (酷狗的 `hash`, QQ 的 `albumMid`,
-    /// 咪咕的 `copyrightId`) are deliberately **omitted rather than sent as an
-    /// empty string**. Published aggregator sources routinely write
+    /// Fields that belong to *other* platforms (酷狗的 `hash`, 咪咕的
+    /// `copyrightId`) are deliberately **omitted rather than sent as an empty
+    /// string**. Published aggregator sources routinely write
     ///
     ///     const songId = musicInfo.hash ?? musicInfo.songmid
     ///
@@ -339,7 +347,7 @@ final class LXScriptRuntime {
     /// the same expression resolve to the real song id.
     private func musicInfoJSON(for track: Track) -> String {
         var info: [String: Any] = [
-            "source": Self.netEaseSourceKey,
+            "source": track.platform.lxSourceKey,
             "id": track.id,
             "songmid": String(track.id),
             "name": track.name,
@@ -358,11 +366,45 @@ final class LXScriptRuntime {
         if let alias = track.alias.first {
             info["alias"] = alias
         }
+        if track.platform == .qq {
+            applyQQIdentifiers(to: &info, track: track)
+        }
 
         guard let data = try? JSONSerialization.data(withJSONObject: info),
               let json = String(data: data, encoding: .utf8)
         else { return "{}" }
         return json
+    }
+
+    /// QQ identifies a song by a **string** mid, never by the numeric id, and
+    /// the id it does expose is not the one scripts want. So `songmid` is
+    /// overwritten with the real mid and the same value is published under every
+    /// key an aggregator might read it from — some ask for `songmid`, some for
+    /// `mid`, some for `musicId`, and the `musicu`-style ones for `media_mid`.
+    ///
+    /// The alias set mirrors Beans Music's `musicInfoPayload`
+    /// (https://github.com/XIaodou0416/Beans-Music, MIT), which is the whole
+    /// reason that project works with the same published scripts. `mediaMid`
+    /// falls back to `songmid` there and so does it here: QQ's search endpoint
+    /// does not return `file.media_mid`, and a source handed *nothing* under
+    /// those keys requests an empty media id and gets no URL back.
+    private func applyQQIdentifiers(to info: inout [String: Any], track: Track) {
+        guard let mid = track.songmid, !mid.isEmpty else { return }
+        let media = (track.mediaMid?.isEmpty == false) ? track.mediaMid! : mid
+
+        info["songmid"] = mid
+        info["mid"] = mid
+        info["musicId"] = mid
+        info["songId"] = track.id
+        info["mediaId"] = media
+        info["media_mid"] = media
+        info["mediaMid"] = media
+        info["strMediaMid"] = media
+
+        if let albumMid = track.albumMid, !albumMid.isEmpty {
+            info["albumMid"] = albumMid
+            info["albummid"] = albumMid
+        }
     }
 
     nonisolated private static func interval(ms: Int) -> String {

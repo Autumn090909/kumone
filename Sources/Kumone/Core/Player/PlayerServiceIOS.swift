@@ -621,7 +621,14 @@ final class PlayerService: ObservableObject {
     private func resolveAndLoad(_ track: Track, generation: Int) async {
         let quality = SettingsManager.shared.audioQuality.rawValue
         let allowsUnblock = SettingsManager.shared.canResolveUnblockedTracks
-        let cacheEnabled = SettingsManager.shared.enableAudioCache
+        // A track from another platform's catalog has no NetEase counterpart to
+        // ask about, and the audio cache is keyed by the bare `Int` song id that
+        // the two platforms number independently. So foreign tracks skip both:
+        // asking NetEase for a QQ `songid` can only ever fail, and a shared cache
+        // key could hand back a different song's audio entirely. Until the key
+        // carries a platform, foreign tracks are resolved fresh every time.
+        let isForeignPlatform = track.platform != .netease
+        let cacheEnabled = SettingsManager.shared.enableAudioCache && !isForeignPlatform
 
         if cacheEnabled {
             do {
@@ -654,9 +661,14 @@ final class PlayerService: ObservableObject {
             }
         }
 
-        var data = try? await NeteaseAPI.songURL(ids: [track.id], level: quality).first
-        if data?.url == nil, quality != AudioQuality.standard.rawValue {
-            data = try? await NeteaseAPI.songURL(ids: [track.id], level: AudioQuality.standard.rawValue).first
+        // Only NetEase tracks have a NetEase direct link; for a foreign track
+        // the whole point of the request below would be to fail.
+        var data: SongURLData?
+        if !isForeignPlatform {
+            data = try? await NeteaseAPI.songURL(ids: [track.id], level: quality).first
+            if data?.url == nil, quality != AudioQuality.standard.rawValue {
+                data = try? await NeteaseAPI.songURL(ids: [track.id], level: AudioQuality.standard.rawValue).first
+            }
         }
         guard generation == resolveGeneration else { return }
 
@@ -735,10 +747,23 @@ final class PlayerService: ObservableObject {
 
     private func handleUnplayable(_ track: Track) {
         consecutiveFailures += 1
-        let reason = track.playability(privilege: nil,
-                                       isLoggedIn: AccountStore.shared.isLoggedIn,
-                                       vipType: AccountStore.shared.vipType).reason
-        ToastCenter.shared.show(String(localized: "《\(track.name)》无法播放\(reason.map { "：\($0)" } ?? "")"))
+        // A track from another platform's catalog can only ever be served by a
+        // third-party source, so when none is switched on that is the useful
+        // thing to say — the generic reason below would send the user hunting
+        // for a fault in the song rather than in their settings.
+        let message: String
+        if track.platform != .netease,
+           SettingsManager.shared.enabledAudioSourceIDs.isEmpty {
+            message = String(
+                localized: "《\(track.name)》来自\(track.platform.displayName)，需要先在设置里启用一个音源"
+            )
+        } else {
+            let reason = track.playability(privilege: nil,
+                                           isLoggedIn: AccountStore.shared.isLoggedIn,
+                                           vipType: AccountStore.shared.vipType).reason
+            message = String(localized: "《\(track.name)》无法播放\(reason.map { "：\($0)" } ?? "")")
+        }
+        ToastCenter.shared.show(message)
         guard isPlaying else {
             engine.replaceCurrentItem(with: nil)
             releaseCurrentPlaybackResources()
@@ -761,7 +786,11 @@ final class PlayerService: ObservableObject {
 
         var asset = AVURLAsset(url: url)
         var resourceLoader: CachingAudioResourceLoader?
-        if SettingsManager.shared.enableAudioCache, !isTrial {
+        // Same reasoning as the lookup in `resolveAndLoad`: the cache key is a
+        // bare `Int` song id and the two platforms share that namespace, so
+        // writing a foreign track under it could later be played back for an
+        // unrelated NetEase song.
+        if SettingsManager.shared.enableAudioCache, !isTrial, track.platform == .netease {
             let source: AudioCacheSource = unblockSource.map(AudioCacheSource.unblock) ?? .netease
             do {
                 let loader = try CachingAudioResourceLoader(

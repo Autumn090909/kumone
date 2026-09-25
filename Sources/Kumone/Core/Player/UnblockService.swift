@@ -28,7 +28,14 @@ enum UnblockService {
         customProviders: [LXAudioSourceProvider] = []
     ) async -> Resolution {
         var newlyAttemptedSources = Set<AudioSourceID>()
-        if enabledSources.contains(.pyncmd), !attemptedSources.contains(.pyncmd) {
+        // pyncmd is a NetEase-indexed aggregator: its `source` parameter accepts
+        // only `netease` (verified against the live API — `tencent` is rejected
+        // outright), so a foreign track would be chased by an id that belongs to
+        // a different platform's numbering. At best that misses, at worst it
+        // matches an unrelated NetEase song that happens to share the number.
+        // Skipped rather than guessed at.
+        if track.platform == .netease,
+           enabledSources.contains(.pyncmd), !attemptedSources.contains(.pyncmd) {
             newlyAttemptedSources.insert(.pyncmd)
             do {
                 return Resolution(

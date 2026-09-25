@@ -227,6 +227,15 @@ struct LXCustomSourceTests {
         #expect(context.evaluateScript("typeof module")?.toString() == "object")
         #expect(context.evaluateScript("exports === module.exports")?.toBool() == true)
 
+        // Node's `global` and the browser's `self`. Sources get copied between
+        // runners, so both names must reach the global object. Asserted as
+        // reachability rather than identity: a host that already defines either
+        // name is allowed to keep its own object.
+        #expect(context.evaluateScript("global.__shimProbe = 1; globalThis.__shimProbe === 1")?
+            .toBool() == true)
+        #expect(context.evaluateScript("self.__shimProbe = 2; globalThis.__shimProbe === 2")?
+            .toBool() == true)
+
         // Text-first cousins of `lx.request`, plus the namespace a second
         // family of sources reads instead of `lx`.
         #expect(context.evaluateScript("typeof customFetch")?.toString() == "function")
@@ -367,6 +376,25 @@ struct LXCustomSourceTests {
         let resolved = try await runtime.musicURL(for: track, requestedQuality: .standard)
 
         #expect(resolved?.url.absoluteString == "https://example.invalid/handler")
+    }
+
+    /// Found by running published sources through the prelude rather than by
+    /// reading it: three of six real sources asked their backend for a track id
+    /// and got an empty string, because `musicInfo.hash` was present-and-empty
+    /// and `??` has no reason to look past it.
+    ///
+    /// The song id has to reach the request URL intact — `/aggregator/wy/7/320k`,
+    /// never `/aggregator/wy//320k`.
+    @MainActor
+    @Test func runtimeKeepsTheSongIdWhenEmptyPlatformFieldsAreOmitted() async throws {
+        let runtime = try LXScriptRuntime(scriptKey: "aggregator", script: Self.aggregatorScript)
+        defer { runtime.shutdown() }
+
+        try await runtime.initialize()
+        let track = try Self.makeTrack(id: 7, name: "歌", artist: "人", durationMS: 100_000)
+        let resolved = try await runtime.musicURL(for: track, requestedQuality: .exhigh)
+
+        #expect(resolved?.url.absoluteString == "https://example.invalid/aggregator/wy/7/320k")
     }
 
     // MARK: - The store
@@ -614,6 +642,45 @@ struct LXCustomSourceTests {
         return 'https://example.invalid/plugin/' + source + '/' + id + '/' + quality
       },
     }
+
+    send(EVENT_NAMES.inited, {
+      status: true,
+      sources: {
+        wy: {
+          name: '网易云',
+          type: 'music',
+          actions: ['musicUrl'],
+          qualitys: ['320k'],
+        },
+      },
+    })
+    """
+
+    /// The shape essentially every aggregator source uses: a single argument,
+    /// destructured, and an id taken with `??` so the first *present* field
+    /// wins. Copied from `ikun.js` / `huibq.js`, which are published as-is.
+    ///
+    /// The `??` is the point. It only falls through on `null` / `undefined`, so
+    /// a host that sends `hash: ""` for a NetEase track shadows the `songmid`
+    /// right behind it and every request goes out with a blank id.
+    private static let aggregatorScript = """
+    /**
+     * @name 聚合音源
+     * @author unit-test
+     */
+
+    const { EVENT_NAMES, on, send } = globalThis.lx
+
+    on(EVENT_NAMES.request, function (payload) {
+      const action = payload.action
+      const source = payload.source
+      const info = payload.info
+      if (action !== 'musicUrl') return Promise.reject('action not support')
+      const songId = info.musicInfo.hash ?? info.musicInfo.songmid
+      return Promise.resolve(
+        'https://example.invalid/aggregator/' + source + '/' + songId + '/' + info.type
+      )
+    })
 
     send(EVENT_NAMES.inited, {
       status: true,

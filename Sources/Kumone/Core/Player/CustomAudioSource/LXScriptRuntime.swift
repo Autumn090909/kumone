@@ -325,6 +325,18 @@ final class LXScriptRuntime {
     /// The `musicInfo` LX hands a script. NetEase sources in the wild read `id`,
     /// `songmid`, `name` and `interval`, so all of them are populated even
     /// though they carry the same track.
+    ///
+    /// Fields that belong to *other* platforms (酷狗的 `hash`, QQ 的 `albumMid`,
+    /// 咪咕的 `copyrightId`) are deliberately **omitted rather than sent as an
+    /// empty string**. Published aggregator sources routinely write
+    ///
+    ///     const songId = musicInfo.hash ?? musicInfo.songmid
+    ///
+    /// and `??` only falls through on `null` / `undefined` — an empty string is
+    /// a perfectly good value, so sending `hash: ""` shadows the `songmid` that
+    /// was right behind it. Measured on three real sources, all three then
+    /// requested `…/url/wy//320k` with a blank id. Leaving the key absent makes
+    /// the same expression resolve to the real song id.
     private func musicInfoJSON(for track: Track) -> String {
         var info: [String: Any] = [
             "source": Self.netEaseSourceKey,
@@ -334,11 +346,8 @@ final class LXScriptRuntime {
             "singer": track.artistNames,
             "albumName": track.album.name,
             "albumId": track.album.id,
-            "albumMid": "",
             "interval": Self.interval(ms: track.durationMS),
             "duration": track.durationMS,
-            "copyrightId": "",
-            "hash": "",
             "types": [],
             "_types": [String: Any](),
             "typeUrl": [String: Any](),

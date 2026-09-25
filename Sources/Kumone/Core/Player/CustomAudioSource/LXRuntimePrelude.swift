@@ -739,6 +739,17 @@ enum LXRuntimePrelude {
       // it ever registers anything, and the only thing the user sees is "this
       // source does nothing" — the failure never names the missing global.
 
+      // `global` (Node) and `self` (browser / worker). Sources are copied
+      // between runners, so a script that says `global.foo = …` or `self.x`
+      // works everywhere except here. Both guards are identity checks, so this
+      // is a no-op on any host that already provides them.
+      if (typeof globalThis.global === 'undefined') {
+        globalThis.global = globalThis
+      }
+      if (typeof globalThis.self === 'undefined') {
+        globalThis.self = globalThis
+      }
+
       // CommonJS. A large share of sources assign their entry points to
       // `module.exports` (often *instead* of registering a `request` handler),
       // so an absent `module` turns a working script into a dead one.

@@ -57,10 +57,14 @@ struct PlaylistSummary: Decodable, Hashable, Identifiable {
     let specialType: Int
     let privacy: Int
     let subscribed: Bool
+    /// QQ addresses a playlist by a string `dissid`, which the numeric id
+    /// above cannot express (it also truncates). `nil` for NetEase.
+    let mid: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, name, picUrl, coverImgUrl, playCount, playcount, trackCount
         case copywriter, creator, specialType, privacy, subscribed
+        case mid, dissid
     }
 
     init(from decoder: Decoder) throws {
@@ -78,6 +82,8 @@ struct PlaylistSummary: Decodable, Hashable, Identifiable {
         specialType = (try? c.decode(Int.self, forKey: .specialType)) ?? 0
         privacy = (try? c.decode(Int.self, forKey: .privacy)) ?? 0
         subscribed = (try? c.decode(Bool.self, forKey: .subscribed)) ?? false
+        mid = (try? c.decode(String.self, forKey: .mid))
+            ?? (try? c.decode(String.self, forKey: .dissid))
     }
 
     /// The auto-created "我喜欢的音乐" playlist.
@@ -137,9 +143,13 @@ struct AlbumSummary: Decodable, Hashable, Identifiable {
     let size: Int
     let subType: String?
     let alias: [String]
+    /// QQ addresses an album by a string `albumMID`, which the numeric id
+    /// above cannot express. `nil` for NetEase.
+    let mid: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, name, picUrl, cover, artist, artists, publishTime, size, subType, alia, alias
+        case mid, albumMID
     }
 
     private struct ArtistName: Codable {

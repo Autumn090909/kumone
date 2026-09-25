@@ -731,20 +731,161 @@ enum LXRuntimePrelude {
         }
       }
 
-      // Exposed for the host: runs the script's request handler for one action
-      // and reports the settled value back through the native bridge.
+      // ------------------------------------------- ecosystem compatibility --
+      //
+      // Published sources are written against more than one runner. Everything
+      // below is a shim for a name the scripts reach for that JavaScriptCore
+      // does not provide. Without it the script dies on a ReferenceError before
+      // it ever registers anything, and the only thing the user sees is "this
+      // source does nothing" — the failure never names the missing global.
+
+      // CommonJS. A large share of sources assign their entry points to
+      // `module.exports` (often *instead* of registering a `request` handler),
+      // so an absent `module` turns a working script into a dead one.
+      if (typeof globalThis.module === 'undefined') {
+        globalThis.module = { exports: {} }
+        globalThis.exports = globalThis.module.exports
+      }
+
+      // `Promise.any` is missing from older JavaScriptCore builds and is used by
+      // sources that race several mirrors and take the first that answers.
+      if (typeof Promise.any !== 'function') {
+        Promise.any = function (iterable) {
+          return new Promise(function (resolve, reject) {
+            var values = Array.prototype.slice.call(iterable || [])
+            if (!values.length) {
+              reject(new Error('All promises were rejected'))
+              return
+            }
+            var pending = values.length
+            values.forEach(function (value) {
+              Promise.resolve(value).then(resolve, function () {
+                pending -= 1
+                if (pending === 0) reject(new Error('All promises were rejected'))
+              })
+            })
+          })
+        }
+      }
+
+      // `customFetch` / `fetch` are the text-first cousins of `lx.request`: they
+      // resolve the payload itself rather than a parsed envelope, which is what
+      // the scripts calling them read. `lx.request` already answers with `raw`
+      // (the decoded body as text) alongside the parsed `body`.
+      function bodyTextOf(response) {
+        if (!response) return ''
+        if (typeof response.raw === 'string') return response.raw
+        if (typeof response.body === 'string') return response.body
+        try {
+          return JSON.stringify(response.body)
+        } catch (ignored) {
+          return ''
+        }
+      }
+
+      globalThis.customFetch = function (url, options) {
+        return lxRequest(url, options || {}).then(bodyTextOf)
+      }
+
+      if (typeof globalThis.fetch !== 'function') {
+        globalThis.fetch = function (url, options) {
+          return lxRequest(url, options || {}).then(function (response) {
+            var status = response && typeof response.statusCode === 'number' ? response.statusCode : 0
+            return {
+              ok: status >= 200 && status < 300,
+              status: status,
+              statusCode: status,
+              headers: (response && response.headers) || {},
+              text: function () { return Promise.resolve(bodyTextOf(response)) },
+              json: function () {
+                try {
+                  return Promise.resolve(JSON.parse(bodyTextOf(response)))
+                } catch (error) {
+                  return Promise.reject(error)
+                }
+              }
+            }
+          })
+        }
+      }
+
+      // A second family of sources is written against the `cerumusic` namespace
+      // rather than `lx`; it is the same bridge under a different name.
+      globalThis.cerumusic = {
+        request: lxRequest,
+        utils: globalThis.lx.utils,
+        env: globalThis.lx.env,
+        version: globalThis.lx.version,
+        currentScriptInfo: scriptInfo,
+        NoticeCenter: function () {},
+        stopRequests: function () {}
+      }
+
+      // Which entry point to call depends on how the script was written, and
+      // there is no way to tell from the outside: an `lx.on(EVENT_NAMES.request)`
+      // handler, `module.exports.musicUrl`, `module.exports.getMusicUrl` and
+      // `MusicPlugin.getMusicUrl` are all in active use. Resolved at call time
+      // rather than at load time, because a script may assign `module.exports`
+      // after its own `inited` handshake.
+      //
+      // A registered handler wins, so scripts that work today keep taking the
+      // exact same path they took before.
+      function resolveEntryPoint(action) {
+        var handler = requestHandlers[EVENT_NAMES.request]
+        if (typeof handler === 'function') {
+          return { kind: 'handler', call: function (sourceKey, musicInfo, quality) {
+            var info = action === 'musicUrl'
+              ? { type: quality, musicInfo: musicInfo }
+              : { musicInfo: musicInfo }
+            return handler({ source: sourceKey, action: action, info: info })
+          } }
+        }
+
+        var plugin = globalThis.module && globalThis.module.exports
+        if (plugin && typeof plugin[action] === 'function') {
+          var named = plugin[action]
+          return { kind: 'export', call: function (sourceKey, musicInfo, quality) {
+            return named.call(plugin, sourceKey, musicInfo, quality)
+          } }
+        }
+
+        if (action !== 'musicUrl') return null
+
+        // `getMusicUrl(source, id, type)` is the shape both of these take: they
+        // want the platform's own identifier, not the whole info object.
+        function lookupId(musicInfo) {
+          return musicInfo.musicId || musicInfo.songmid || musicInfo.id || musicInfo.hash || ''
+        }
+
+        if (plugin && typeof plugin.getMusicUrl === 'function') {
+          return { kind: 'export', call: function (sourceKey, musicInfo, quality) {
+            return plugin.getMusicUrl(sourceKey, lookupId(musicInfo), quality)
+          } }
+        }
+
+        var musicPlugin = globalThis.MusicPlugin
+        if (musicPlugin && typeof musicPlugin.getMusicUrl === 'function') {
+          return { kind: 'musicPlugin', call: function (sourceKey, musicInfo, quality) {
+            return musicPlugin.getMusicUrl(sourceKey, lookupId(musicInfo), quality)
+          } }
+        }
+
+        return null
+      }
+
+      // Exposed for the host: runs one action and reports the settled value back
+      // through the native bridge.
       globalThis.__kumoneRunAction = function (requestID, sourceKey, action, quality, musicInfoJSON) {
         var promise
         try {
-          var handler = requestHandlers[EVENT_NAMES.request]
-          if (typeof handler !== 'function') {
-            throw new Error('脚本没有注册 request 事件')
-          }
           var musicInfo = JSON.parse(musicInfoJSON)
-          var info = action === 'musicUrl'
-            ? { type: quality, musicInfo: musicInfo }
-            : { musicInfo: musicInfo }
-          promise = Promise.resolve(handler({ source: sourceKey, action: action, info: info }))
+          var entry = resolveEntryPoint(action)
+          if (!entry) {
+            throw new Error(
+              '脚本没有可调用的入口：既未注册 request 事件，也未导出 module.exports 的 musicUrl / getMusicUrl，也没有 MusicPlugin'
+            )
+          }
+          promise = Promise.resolve(entry.call(sourceKey, musicInfo, quality))
         } catch (error) {
           promise = Promise.reject(error)
         }

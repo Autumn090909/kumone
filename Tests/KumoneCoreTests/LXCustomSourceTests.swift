@@ -213,6 +213,36 @@ struct LXCustomSourceTests {
         #expect(context.evaluateScript("Buffer.from('中文').length")?.toInt32() == 6)
     }
 
+    /// Names a published source reaches for that JavaScriptCore does not
+    /// provide. Each one is a shim, and a missing shim is the worst kind of
+    /// failure: the script dies on a `ReferenceError` before it registers
+    /// anything, so the user sees "this source does nothing" with no clue why.
+    @MainActor
+    @Test func preludeExposesTheEcosystemShims() throws {
+        let context = try Self.makeStubbedContext()
+        _ = context.evaluateScript(LXRuntimePrelude.source)
+
+        // `module.exports` is a second entry point, not a nicety: a large share
+        // of sources assign `musicUrl` there instead of registering a handler.
+        #expect(context.evaluateScript("typeof module")?.toString() == "object")
+        #expect(context.evaluateScript("exports === module.exports")?.toBool() == true)
+
+        // Text-first cousins of `lx.request`, plus the namespace a second
+        // family of sources reads instead of `lx`.
+        #expect(context.evaluateScript("typeof customFetch")?.toString() == "function")
+        #expect(context.evaluateScript("typeof fetch")?.toString() == "function")
+        #expect(context.evaluateScript("typeof cerumusic")?.toString() == "object")
+        #expect(context.evaluateScript("cerumusic.utils === lx.utils")?.toBool() == true)
+
+        // Used by sources that race several mirrors.
+        #expect(context.evaluateScript("typeof Promise.any")?.toString() == "function")
+
+        // The shims must not displace what the prelude already published.
+        #expect(context.evaluateScript("typeof Buffer")?.toString() == "function")
+        #expect(context.evaluateScript("typeof setTimeout")?.toString() == "function")
+        #expect(context.evaluateScript("typeof lx.request")?.toString() == "function")
+    }
+
     // MARK: - The runtime, end to end and offline
 
     @MainActor
@@ -292,6 +322,51 @@ struct LXCustomSourceTests {
         // the Buffer it hands back decodes back to the original text.
         #expect(resolved?.url.absoluteString
             == "https://example.invalid/900150983cd24fb0d6963f7d28e17f72/kumone")
+    }
+
+    /// A script with no `lx.on` at all: `module.exports` is the only way in.
+    /// Before the export was reachable, this shape of source initialised fine
+    /// and then failed every request.
+    @MainActor
+    @Test func runtimeCallsTheExportedMusicURL() async throws {
+        let runtime = try LXScriptRuntime(scriptKey: "exported", script: Self.exportedMusicURLScript)
+        defer { runtime.shutdown() }
+
+        try await runtime.initialize()
+        let track = try Self.makeTrack(id: 7, name: "歌", artist: "人", durationMS: 100_000)
+        let resolved = try await runtime.musicURL(for: track, requestedQuality: .exhigh)
+
+        #expect(resolved?.url.absoluteString == "https://example.invalid/export/wy/7")
+        #expect(resolved?.quality == "320k")
+    }
+
+    /// `MusicPlugin.getMusicUrl(source, id, type)` is the third shape in the
+    /// wild, and the last one tried.
+    @MainActor
+    @Test func runtimeCallsTheMusicPluginEntryPoint() async throws {
+        let runtime = try LXScriptRuntime(scriptKey: "plugin", script: Self.musicPluginScript)
+        defer { runtime.shutdown() }
+
+        try await runtime.initialize()
+        let track = try Self.makeTrack(id: 13, name: "歌", artist: "人", durationMS: 100_000)
+        let resolved = try await runtime.musicURL(for: track, requestedQuality: .standard)
+
+        #expect(resolved?.url.absoluteString == "https://example.invalid/plugin/wy/13/320k")
+    }
+
+    /// Both routes present. The registered handler must keep winning, so every
+    /// script that works today takes exactly the path it took before the export
+    /// fallback existed.
+    @MainActor
+    @Test func runtimePrefersARegisteredHandlerOverAnExport() async throws {
+        let runtime = try LXScriptRuntime(scriptKey: "both", script: Self.handlerAndExportScript)
+        defer { runtime.shutdown() }
+
+        try await runtime.initialize()
+        let track = try Self.makeTrack(id: 1, name: "歌", artist: "人", durationMS: 100_000)
+        let resolved = try await runtime.musicURL(for: track, requestedQuality: .standard)
+
+        #expect(resolved?.url.absoluteString == "https://example.invalid/handler")
     }
 
     // MARK: - The store
@@ -487,6 +562,99 @@ struct LXCustomSourceTests {
           type: 'music',
           actions: ['musicUrl'],
           qualitys: ['128k'],
+        },
+      },
+    })
+    """
+
+    /// Only an export — no `lx.on` anywhere. This is the shape the export
+    /// fallback exists for.
+    private static let exportedMusicURLScript = """
+    /**
+     * @name 导出的音源
+     * @author unit-test
+     */
+
+    const { EVENT_NAMES, send } = globalThis.lx
+
+    module.exports = {
+      musicUrl: function (source, musicInfo, quality) {
+        return {
+          url: 'https://example.invalid/export/' + source + '/' + musicInfo.id,
+          quality: quality,
+        }
+      },
+    }
+
+    send(EVENT_NAMES.inited, {
+      status: true,
+      sources: {
+        wy: {
+          name: '网易云',
+          type: 'music',
+          actions: ['musicUrl'],
+          qualitys: ['320k'],
+        },
+      },
+    })
+    """
+
+    /// The `MusicPlugin` namespace: the same idea under a different global, and
+    /// the last entry point tried.
+    private static let musicPluginScript = """
+    /**
+     * @name MusicPlugin 音源
+     * @author unit-test
+     */
+
+    const { EVENT_NAMES, send } = globalThis.lx
+
+    globalThis.MusicPlugin = {
+      getMusicUrl: function (source, id, quality) {
+        return 'https://example.invalid/plugin/' + source + '/' + id + '/' + quality
+      },
+    }
+
+    send(EVENT_NAMES.inited, {
+      status: true,
+      sources: {
+        wy: {
+          name: '网易云',
+          type: 'music',
+          actions: ['musicUrl'],
+          qualitys: ['320k'],
+        },
+      },
+    })
+    """
+
+    /// Both routes present at once, so the precedence between them is pinned.
+    private static let handlerAndExportScript = """
+    /**
+     * @name 双入口
+     * @author unit-test
+     */
+
+    const { EVENT_NAMES, on, send } = globalThis.lx
+
+    module.exports = {
+      musicUrl: function () {
+        return 'https://example.invalid/export'
+      },
+    }
+
+    on(EVENT_NAMES.request, function () {
+      return { url: 'https://example.invalid/handler', quality: '320k' }
+    })
+
+    send(EVENT_NAMES.inited, {
+      status: true,
+      sources: {
+        wy: {
+          name: '网易云',
+          type: 'music',
+          actions: ['musicUrl'],
+          qualitys: ['320k'],
         },
       },
     })

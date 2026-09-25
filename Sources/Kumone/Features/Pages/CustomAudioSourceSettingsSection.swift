@@ -1,6 +1,9 @@
 import CoreFoundation
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(iOS)
+import UIKit
+#endif
 
 /// The 自定义音源 block in Settings: import, enable, reorder, verify and delete
 /// LX-Music-compatible scripts.
@@ -13,6 +16,8 @@ struct CustomAudioSourceSettingsSection: View {
 
     @State private var isPasting = false
     @State private var isChoosingFile = false
+    @State private var isImportingURL = false
+    @State private var urlDraft = ""
     @State private var draft = ""
     @State private var alertMessage: String?
     @State private var status: ImportStatus?
@@ -21,9 +26,10 @@ struct CustomAudioSourceSettingsSection: View {
     /// The last import/verify outcome, rendered **inline** rather than only in an
     /// alert.
     ///
-    /// An alert raised from `fileImporter`'s completion handler is dropped by
-    /// SwiftUI often enough that "I picked a file and absolutely nothing
-    /// happened" was the reported symptom. A row inside the section cannot be
+    /// Two separate routes have to report, and both used to be able to fail
+    /// silently: an alert raised while the picker is still dismissing is dropped
+    /// by SwiftUI, and a read of a security-scoped URL outside its access window
+    /// throws somewhere nobody sees. A row inside the section cannot be
     /// swallowed, so the user always gets an answer even when the alert is lost.
     private struct ImportStatus: Equatable {
         var text: String
@@ -71,6 +77,10 @@ struct CustomAudioSourceSettingsSection: View {
             Button("从文件导入…") {
                 isChoosingFile = true
             }
+            Button("从链接导入…") {
+                urlDraft = ""
+                isImportingURL = true
+            }
 
             if let status {
                 HStack(alignment: .top, spacing: 6) {
@@ -94,6 +104,32 @@ struct CustomAudioSourceSettingsSection: View {
         .sheet(isPresented: $isPasting) {
             pasteSheet
         }
+        .sheet(isPresented: $isImportingURL) {
+            urlImportSheet
+        }
+        #if os(iOS)
+        // `UIDocumentPickerViewController` with `asCopy: true` — deliberately
+        // *not* SwiftUI's `fileImporter`.
+        //
+        // The copy is the whole point. A `fileImporter` vends a
+        // security-scoped URL, and reading one outside the matching
+        // `startAccessingSecurityScopedResource()` window fails; when that
+        // failure also gets dropped on the way to the UI, the user is left with
+        // "I picked a file and absolutely nothing happened". `asCopy: true`
+        // hands back a URL inside the app's own container instead, so the read
+        // is an ordinary file read that cannot be denied — and for a source
+        // script of a few tens of kilobytes the copy costs nothing.
+        .fullScreenCover(isPresented: $isChoosingFile) {
+            SourceDocumentPicker(
+                onPick: { url in
+                    isChoosingFile = false
+                    readAndImport(url)
+                },
+                onCancel: { isChoosingFile = false }
+            )
+            .ignoresSafeArea()
+        }
+        #else
         .fileImporter(
             isPresented: $isChoosingFile,
             allowedContentTypes: [.javaScript, .plainText, .data],
@@ -101,6 +137,7 @@ struct CustomAudioSourceSettingsSection: View {
         ) { result in
             handleFileImport(result)
         }
+        #endif
         .alert("自定义音源", isPresented: alertBinding) {
             Button("好", role: .cancel) { alertMessage = nil }
         } message: {
@@ -210,37 +247,132 @@ struct CustomAudioSourceSettingsSection: View {
                 report(String(localized: "没有选中任何文件。"), isError: true)
                 return
             }
-            let fileName = url.lastPathComponent
-            let isScoped = url.startAccessingSecurityScopedResource()
-            defer { if isScoped { url.stopAccessingSecurityScopedResource() } }
+            readAndImport(url)
+        }
+    }
 
-            let data: Data
+    /// Reads a picked file and hands its contents to the importer.
+    ///
+    /// Shared by the iOS document picker and macOS's `fileImporter`. The
+    /// security-scope calls are kept even though the iOS picker copies the file
+    /// into the app first: they cost nothing when the URL is not scoped, and
+    /// they keep the read correct if the picker's behaviour ever changes.
+    private func readAndImport(_ url: URL) {
+        let fileName = url.lastPathComponent.isEmpty
+            ? String(localized: "未命名文件")
+            : url.lastPathComponent
+        let isScoped = url.startAccessingSecurityScopedResource()
+        defer { if isScoped { url.stopAccessingSecurityScopedResource() } }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            report(
+                String(localized: "读不到这个文件：") + fileName
+                    + "\n" + error.localizedDescription,
+                isError: true
+            )
+            return
+        }
+        guard !data.isEmpty else {
+            report(String(localized: "文件是空的：") + fileName, isError: true)
+            return
+        }
+
+        // LX only promises UTF-8, but scripts written on Windows are very
+        // often GB18030/GBK, and rejecting those outright is what made a
+        // perfectly good script look like "nothing happened".
+        let decoded = Self.decode(data)
+        let fallbackName = url.deletingPathExtension().lastPathComponent
+        var note = String(localized: "文件：") + fileName
+            + "（\(data.count) " + String(localized: "字节") + "）"
+        if let warning = decoded.warning {
+            note += "\n" + warning
+        }
+        performImport(decoded.script, fallbackName: fallbackName, note: note)
+    }
+
+    private var urlImportSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("从链接导入音源")
+                .font(.headline)
+            Text("填一个直接指向脚本文本的地址（GitHub 的 raw 链接也可以）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TextField("https://example.com/source.js", text: $urlDraft)
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                #endif
+                .font(.system(.body, design: .monospaced))
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Spacer()
+                Button("取消") { isImportingURL = false }
+                Button("导入") {
+                    let address = urlDraft
+                    isImportingURL = false
+                    importRemote(address)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(urlDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+    }
+
+    /// Downloads a source from a URL.
+    ///
+    /// Worth having alongside the file picker: published sources live on GitHub
+    /// and forum attachments, and getting one onto the phone is normally
+    /// download → save to Files → pick. A raw URL is one paste, and it is the
+    /// only route that works when the hosting site hands the file to a browser
+    /// rather than to the Files app.
+    private func importRemote(_ address: String) {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else {
+            report(String(localized: "链接无效：") + trimmed, isError: true)
+            return
+        }
+
+        report(String(localized: "正在下载：") + trimmed, isError: false)
+
+        Task { @MainActor in
             do {
-                data = try Data(contentsOf: url)
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if let http = response as? HTTPURLResponse,
+                   !(200...299).contains(http.statusCode) {
+                    report(
+                        String(localized: "下载失败：HTTP ") + "\(http.statusCode)",
+                        isError: true
+                    )
+                    return
+                }
+                guard !data.isEmpty else {
+                    report(String(localized: "下载到的内容是空的。"), isError: true)
+                    return
+                }
+                let decoded = Self.decode(data)
+                let fallbackName = url.deletingPathExtension().lastPathComponent
+                var note = String(localized: "来源：") + trimmed
+                    + "（\(data.count) " + String(localized: "字节") + "）"
+                if let warning = decoded.warning {
+                    note += "\n" + warning
+                }
+                performImport(decoded.script, fallbackName: fallbackName, note: note)
             } catch {
                 report(
-                    String(localized: "读不到这个文件：") + fileName
-                        + "\n" + error.localizedDescription,
+                    String(localized: "下载失败：") + error.localizedDescription,
                     isError: true
                 )
-                return
             }
-            guard !data.isEmpty else {
-                report(String(localized: "文件是空的：") + fileName, isError: true)
-                return
-            }
-
-            // LX only promises UTF-8, but scripts written on Windows are very
-            // often GB18030/GBK, and rejecting those outright is what made a
-            // perfectly good script look like "nothing happened".
-            let decoded = Self.decode(data)
-            let fallbackName = url.deletingPathExtension().lastPathComponent
-            var note = String(localized: "文件：") + fileName
-                + "（\(data.count) " + String(localized: "字节") + "）"
-            if let warning = decoded.warning {
-                note += "\n" + warning
-            }
-            performImport(decoded.script, fallbackName: fallbackName, note: note)
         }
     }
 
@@ -317,3 +449,54 @@ struct CustomAudioSourceSettingsSection: View {
         )
     }
 }
+
+#if os(iOS)
+/// The iOS document picker, copied into the app's container on the way in.
+///
+/// `asCopy: true` is doing the real work — see the note where this is
+/// presented. `UTType.item` sits alongside the specific types so a script saved
+/// with an unexpected extension (`.js.txt`, or none at all) stays selectable;
+/// whether the contents are a usable script is the importer's decision, not the
+/// file type's.
+private struct SourceDocumentPicker: UIViewControllerRepresentable {
+    let onPick: (URL) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.javaScript, .json, .plainText, .item],
+            asCopy: true
+        )
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let parent: SourceDocumentPicker
+
+        init(_ parent: SourceDocumentPicker) {
+            self.parent = parent
+        }
+
+        func documentPicker(
+            _ controller: UIDocumentPickerViewController,
+            didPickDocumentsAt urls: [URL]
+        ) {
+            guard let url = urls.first else {
+                parent.onCancel()
+                return
+            }
+            parent.onPick(url)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            parent.onCancel()
+        }
+    }
+}
+#endif

@@ -349,7 +349,7 @@ struct QQCatalogTests {
         #expect(toplist.subtitle == "每天更新")
         #expect(toplist.previewSongNames == ["茶汤", "我不难过", "甲乙丙丁"])
         let cover = try #require(toplist.coverURL)
-        #expect(cover.absoluteString.hasPrefix("https://"))
+        #expect(cover.hasPrefix("https://"))
     }
 
     @Test func nonSongToplistsAreDropped() {

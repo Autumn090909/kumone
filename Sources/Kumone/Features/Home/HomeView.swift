@@ -123,9 +123,17 @@ struct HomeView: View {
         }
         .navigationTitle("推荐")
         .toolbar {
+            // `topBarLeading` is iOS-only; macOS gets the equivalent sidebar-side
+            // placement so the switcher exists on both.
+            #if os(iOS)
             ToolbarItem(placement: .topBarLeading) {
                 platformSwitcher
             }
+            #else
+            ToolbarItem(placement: .navigation) {
+                platformSwitcher
+            }
+            #endif
         }
     }
 

@@ -48,7 +48,7 @@ struct QQHomeView: View {
                         NavigationLink(value: Destination.qqToplist(
                             topID: toplist.id,
                             name: toplist.name,
-                            cover: toplist.coverURL?.absoluteString
+                            cover: toplist.coverURL
                         )) {
                             toplistCard(toplist)
                         }
@@ -100,8 +100,7 @@ struct QQHomeView: View {
             title: toplist.name,
             subtitle: toplist.previewSongNames.joined(separator: " / ")
         )
-    }
-}
+    }}
 
 /// Shared so the loaded sections survive tab switches (no skeleton flash),
 /// matching `HomeViewModel.shared`.

@@ -495,7 +495,8 @@ enum QQMusicAPI {
         let subtitle: String?
         /// Up to three song names the overview bundles in as a teaser.
         let previewSongNames: [String]
-        let coverURL: URL?
+        /// Raw URL string — `resizedImageURL` is a `String` extension.
+        let coverURL: String?
     }
 
     /// The ranking-board overview: `data.topList[]` with `topTitle` / `picUrl`
@@ -522,7 +523,6 @@ enum QQMusicAPI {
             .compactMap { stringValue($0["songname"]) }
         let cover = (stringValue(item["picUrl"]) ?? stringValue(item["headPicUrl"]))
             .flatMap(httpsURL)
-            .flatMap(URL.init(string:))
         return Toplist(
             id: id,
             name: name,

@@ -46,7 +46,9 @@ struct QQToplistDetailView: View {
             }
         }
         .navigationTitle(model.name)
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .task { await model.load() }
     }
 

@@ -144,7 +144,6 @@ struct DestinationsModifier: ViewModifier {
         }
     }
 }
-
 extension View {
     func playerChrome(detailWidth: CGFloat) -> some View {
         modifier(PlayerChromeModifier(detailWidth: detailWidth))

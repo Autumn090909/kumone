@@ -76,6 +76,12 @@ enum QQMusicAPI {
     /// hot-playlist data with the page itself — one request, no throttled
     /// `musicu` round trip.
     private static let homepageURL = "https://y.qq.com/"
+    /// A user's *created* playlists (legacy `fcg`; needs the login cookie).
+    private static let userCreatedDissEndpoint =
+        "https://c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss"
+    /// A user's *subscribed* playlists (legacy `fcg`; needs the login cookie).
+    private static let userCollectedDissEndpoint =
+        "https://c.y.qq.com/fav/fcgi-bin/fcg_get_profile_order_asset.fcg"
 
     /// QQ returns an empty body to its own app's default client UA, and the
     /// `Referer` is not optional — without it the endpoint replies with an
@@ -851,10 +857,204 @@ enum QQMusicAPI {
         return decode(PlaylistSummary.self, from: shaped)
     }
 
+    // MARK: - Account: signed-in user playlists
+
+    /// The signed-in user's QQ playlists — created, subscribed, and QQ's own
+    /// 「我喜欢」 when it carries a real playlist id. Best effort: whatever any
+    /// of the three endpoints yields, de-duplicated, `[]` when logged out.
+    ///
+    /// Three fallback layers, ported from Beans Music's battle-tested flow:
+    /// 1. the legacy `fcg_user_created_diss` / `fcg_get_profile_order_asset`
+    ///    endpoints, tried with every account identity the cookie jar offers
+    ///    (some accounts only answer to `p_uin` or `wxuin`);
+    /// 2. then the official-app `musicu` gateway `GetUserPlaylist` with
+    ///    `order` 1/2/3, which is what the QQ Music app itself calls.
+    static func userPlaylists() async -> [PlaylistSummary] {
+        let auth = QQMusicAuth.shared
+        guard auth.isLoggedIn else { return [] }
+        let cookieCandidates = [auth.playlistCookieHeader, auth.cookieHeader]
+            .filter { !$0.isEmpty }
+        guard !cookieCandidates.isEmpty else { return [] }
+        let identityCandidates = auth.playlistIdentityCandidates
+
+        var summaries: [PlaylistSummary] = []
+        var seenMIDs = Set<String>()
+        func append(_ item: [String: Any]) {
+            guard let summary = userPlaylistSummary(from: item),
+                  let mid = summary.mid, !mid.isEmpty,
+                  !seenMIDs.contains(mid)
+            else { return }
+            seenMIDs.insert(mid)
+            summaries.append(summary)
+        }
+
+        for uin in identityCandidates {
+            var components = URLComponents(string: userCreatedDissEndpoint)
+            components?.queryItems = [
+                URLQueryItem(name: "hostUin", value: "0"),
+                URLQueryItem(name: "hostuin", value: uin),
+                URLQueryItem(name: "sin", value: "0"),
+                URLQueryItem(name: "size", value: "200"),
+                URLQueryItem(name: "g_tk", value: String(auth.gtk)),
+                URLQueryItem(name: "loginUin", value: uin),
+                URLQueryItem(name: "format", value: "json"),
+                URLQueryItem(name: "inCharset", value: "utf8"),
+                URLQueryItem(name: "outCharset", value: "utf-8"),
+                URLQueryItem(name: "notice", value: "0"),
+                URLQueryItem(name: "platform", value: "yqq.json"),
+                URLQueryItem(name: "needNewCode", value: "0"),
+            ]
+            guard let url = components?.url else { continue }
+            for cookie in cookieCandidates {
+                guard let created = try? await getJSON(url, cookie: cookie) else { continue }
+                let data = created["data"] as? [String: Any] ?? created
+                let list = (data["disslist"] as? [[String: Any]]) ?? []
+                if !list.isEmpty {
+                    list.forEach(append)
+                    break
+                }
+            }
+            if !summaries.isEmpty { break }
+        }
+
+        for uin in identityCandidates {
+            var components = URLComponents(string: userCollectedDissEndpoint)
+            components?.queryItems = [
+                URLQueryItem(name: "ct", value: "20"),
+                URLQueryItem(name: "cid", value: "205360956"),
+                URLQueryItem(name: "userid", value: uin),
+                URLQueryItem(name: "reqtype", value: "3"),
+                URLQueryItem(name: "sin", value: "0"),
+                URLQueryItem(name: "ein", value: "80"),
+                URLQueryItem(name: "g_tk", value: String(auth.gtk)),
+            ]
+            guard let url = components?.url else { continue }
+            for cookie in cookieCandidates {
+                guard let collected = try? await getJSON(url, cookie: cookie) else { continue }
+                let data = collected["data"] as? [String: Any] ?? collected
+                let list = (data["cdlist"] as? [[String: Any]]) ?? []
+                if !list.isEmpty {
+                    list.forEach(append)
+                    break
+                }
+            }
+        }
+
+        if summaries.isEmpty {
+            for order in [1, 2, 3] {
+                for uin in identityCandidates {
+                    let numeric = Int(uin) ?? 0
+                    let payload: [String: Any] = [
+                        "comm": [
+                            "ct": 24, "cv": 0, "uin": numeric,
+                            "g_tk": auth.gtk, "platform": "yqq",
+                        ],
+                        "req_1": [
+                            "module": "music.musichallSong.PlayListDataServer",
+                            "method": "GetUserPlaylist",
+                            "param": ["uin": numeric, "sin": 0, "size": 200, "order": order],
+                        ],
+                    ]
+                    for cookie in cookieCandidates {
+                        guard let json = try? await postJSON(musicuEndpoint, payload, cookie: cookie) else { continue }
+                        let list = playlistArray(fromUserPlaylist: json)
+                        if !list.isEmpty {
+                            list.forEach(append)
+                            break
+                        }
+                    }
+                    if !summaries.isEmpty { break }
+                }
+            }
+        }
+
+        return summaries
+    }
+
+    /// Legacy user-playlist rows arrive under different key names than search
+    /// results (`diss_name`, `diss_cover`, `song_cnt`, …), and the official
+    /// gateway adds its own variants. Normalise the aliases, then reuse the
+    /// search mapper. QZone folder rows carry a `dirid` but no real playlist
+    /// id — they are dropped instead of rendered as permanently empty entries.
+    static func userPlaylistSummary(from item: [String: Any]) -> PlaylistSummary? {
+        let dirid = intValue(item["dirid"]) ?? 0
+        let dissid = intValue(item["dissid"] ?? item["diss_id"]) ?? 0
+        let tid = intValue(item["tid"]) ?? 0
+        if dissid == 0 && tid == 0 && dirid > 0 { return nil }
+
+        var normalised = item
+        if let name = stringValue(item["diss_name"]) { normalised["dissname"] = name }
+        if let cover = ["diss_cover", "dir_pic_url", "logo", "picurl", "pic_url"]
+            .compactMap({ stringValue(item[$0]) }).first {
+            normalised["imgurl"] = cover
+        }
+        if let count = intValue(item["song_cnt"])
+            ?? intValue(item["songnum"])
+            ?? intValue(item["total_song_num"]) {
+            normalised["song_count"] = count
+        }
+        if dissid == 0, tid > 0 { normalised["dissid"] = tid }
+
+        guard let summary = playlistSummary(from: normalised) else { return nil }
+        let text = summary.name + " " + (stringValue(item["hostname"]) ?? "")
+        let lowered = text.lowercased()
+        if lowered.contains("qzone") || text.contains("空间") || text.contains("背景音乐") {
+            return nil
+        }
+        return summary
+    }
+
+    /// Pulls the playlist row array out of the `GetUserPlaylist` response —
+    /// QQ has shipped it under five different key paths, so try them in the
+    /// order Beans measured, then fall back to a recursive scan.
+    private static func playlistArray(fromUserPlaylist json: [String: Any]) -> [[String: Any]] {
+        let paths: [[String]] = [
+            ["req_1", "data", "v_playlist"],
+            ["req_1", "data", "playlist"],
+            ["req_1", "data", "list"],
+            ["req_1", "data", "data", "v_playlist"],
+            ["req_1", "data", "body", "v_playlist"],
+        ]
+        for path in paths {
+            var current: Any = json
+            for key in path {
+                guard let dict = current as? [String: Any], let next = dict[key] else {
+                    current = NSNull()
+                    break
+                }
+                current = next
+            }
+            if let list = current as? [[String: Any]], !list.isEmpty {
+                return list
+            }
+        }
+        var result: [[String: Any]] = []
+        func walk(_ value: Any) {
+            guard result.isEmpty else { return }
+            if let dict = value as? [String: Any] {
+                for (key, child) in dict {
+                    if key == "v_playlist", let list = child as? [[String: Any]], !list.isEmpty {
+                        result = list
+                        return
+                    }
+                    walk(child)
+                }
+            } else if let array = value as? [Any] {
+                for child in array { walk(child) }
+            }
+        }
+        walk(json)
+        return result
+    }
+
     // MARK: - Transport
 
-    private static func getJSON(_ url: URL) async throws -> [String: Any] {
-        let (data, response) = try await session.data(from: url)
+    private static func getJSON(_ url: URL, cookie: String? = nil) async throws -> [String: Any] {
+        var request = URLRequest(url: url)
+        if let cookie, !cookie.isEmpty {
+            request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
+        let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             log.error("QQ HTTP \(http.statusCode, privacy: .public) \(url.absoluteString, privacy: .public)")
             throw QQError.malformedResponse
@@ -867,7 +1067,8 @@ enum QQMusicAPI {
 
     private static func postJSON(
         _ urlString: String,
-        _ payload: [String: Any]
+        _ payload: [String: Any],
+        cookie: String? = nil
     ) async throws -> [String: Any] {
         guard let url = URL(string: urlString),
               JSONSerialization.isValidJSONObject(payload),
@@ -877,6 +1078,9 @@ enum QQMusicAPI {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let cookie, !cookie.isEmpty {
+            request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
         request.httpBody = body
 
         let (data, response) = try await session.data(for: request)

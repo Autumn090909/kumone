@@ -558,6 +558,9 @@ struct IOSMiniPlayerBar: View {
 struct IOSLibraryView: View {
     @Binding var showLogin: Bool
     @EnvironmentObject private var account: AccountStore
+    @StateObject private var qqAuth = QQMusicAuth.shared
+    @State private var qqPlaylists: [PlaylistSummary] = []
+    @State private var showQQLogin = false
     @State private var showSettings = false
     @State private var showNewPlaylist = false
     @State private var newPlaylistName = ""
@@ -688,6 +691,8 @@ struct IOSLibraryView: View {
                 }
             }
 
+            qqMusicSection
+
             Section {
                 PlayerClearanceSpacer()
                     .listRowBackground(Color.clear)
@@ -702,6 +707,20 @@ struct IOSLibraryView: View {
                     Image(systemName: "gearshape")
                 }
             }
+        }
+        .sheet(isPresented: $showQQLogin) {
+            QQLoginSheet()
+                .environmentObject(ToastCenter.shared)
+        }
+        .task(id: qqAuth.isLoggedIn) {
+            guard qqAuth.isLoggedIn else {
+                qqPlaylists = []
+                return
+            }
+            qqPlaylists = await QQMusicAPI.userPlaylists()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: QQMusicAuth.loginDidUpdateNotification)) { _ in
+            Task { await refreshQQPlaylists() }
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
@@ -734,6 +753,84 @@ struct IOSLibraryView: View {
             }
             Button("取消", role: .cancel) { newPlaylistName = "" }
         }
+    }
+
+    // MARK: - QQ Music
+
+    /// The QQ Music block: a sign-in row while logged out, the signed-in
+    /// account's playlists (created + subscribed) once logged in. NetEase's
+    /// sections above are untouched — the two accounts live side by side.
+    @ViewBuilder
+    private var qqMusicSection: some View {
+        if qqAuth.isLoggedIn {
+            Section {
+                if qqPlaylists.isEmpty {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("正在读取 QQ 歌单…")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    ForEach(qqPlaylists) { playlist in
+                        NavigationLink(value: Destination.qqPlaylist(playlist.mid ?? "")) {
+                            HStack(spacing: 10) {
+                                CachedAsyncImage(url: playlist.coverURL?.resizedImageURL(80), animated: false)
+                                    .frame(width: 32, height: 32)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(playlist.name)
+                                        .font(.system(size: 14))
+                                        .lineLimit(1)
+                                    Text("QQ音乐 · \(playlist.trackCount) 首")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            } header: {
+                HStack {
+                    Text("QQ音乐 · \(qqAuth.nickname)")
+                    Spacer()
+                    Button("退出") {
+                        qqAuth.logout()
+                        qqPlaylists = []
+                    }
+                    .font(.system(size: 12))
+                }
+            }
+        } else {
+            Section("QQ音乐") {
+                Button {
+                    showQQLogin = true
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "person.crop.circle.badge.questionmark")
+                            .font(.system(size: 24))
+                            .foregroundStyle(Theme.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("登录 QQ 音乐")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.primary)
+                            Text("显示你的 QQ 歌单，不影响网易云登录")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    private func refreshQQPlaylists() async {
+        guard qqAuth.isLoggedIn else {
+            qqPlaylists = []
+            return
+        }
+        qqPlaylists = await QQMusicAPI.userPlaylists()
     }
 }
 #endif

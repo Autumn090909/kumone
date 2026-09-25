@@ -422,3 +422,101 @@ struct QQCatalogTests {
         #expect(QQMusicAPI.decodeJSONEscapes(#"\q"#) == #"\q"#)
     }
 }
+
+// MARK: - QQ Music sign-in (web cookies)
+
+@Suite("QQ 音乐登录")
+struct QQAuthTests {
+    @Test func gtkHashMatchesTheJavaScriptReference() {
+        // Reference values produced by running QQ's own JS algorithm in node.
+        #expect(QQMusicAuth.hash5381("") == 5381)
+        #expect(QQMusicAuth.hash5381("abc") == 193_485_963)
+        #expect(QQMusicAuth.hash5381("Q_H_L_abcdef1234567890") == 505_493_705)
+        #expect(QQMusicAuth.hash5381("p_skey_SAMPLE VALUE With=Sign;==") == 1_166_302_605)
+        #expect(QQMusicAuth.hash5381("o1234567890") == 2_020_846_529)
+    }
+
+    @Test func cookieHeaderKeepsTheCanonicalOrder() {
+        let header = QQMusicAuth.cookieHeaderValue(from: [
+            "p_skey": "ps",
+            "uin": "o12345",
+            "qqmusic_key": "Q_H_L_key",
+            "noise": "dropped",
+        ], includeCompatibilityUIN: true)
+        #expect(header == "uin=o12345; qqmusic_key=Q_H_L_key; p_skey=ps")
+    }
+
+    @Test func aWeChatJarGetsACompatibilityUINForPlaybackButNotForPlaylists() {
+        let cookies = ["wxuin": "998877", "wxskey": "skeyvalue", "wxopenid": "oid"]
+        let withCompatibility = QQMusicAuth.cookieHeaderValue(from: cookies, includeCompatibilityUIN: true)
+        let forPlaylists = QQMusicAuth.cookieHeaderValue(from: cookies, includeCompatibilityUIN: false)
+        #expect(withCompatibility.hasPrefix("uin=998877; "))
+        // (wxuin itself contains "uin=" as a substring, so check the prefix.)
+        #expect(!forPlaylists.hasPrefix("uin="))
+        #expect(QQMusicAuth.playlistUin(from: cookies) == "998877")
+    }
+
+    @Test func identityCandidatesCoverEveryUsableAccountIDOnce() {
+        let candidates = QQMusicAuth.identityCandidates(from: [
+            "uin": "o111", "p_uin": "222", "wxuin": "333",
+        ])
+        #expect(candidates == ["222", "111", "333", "0"])
+        // A bare jar still offers the "let the server decide" candidate.
+        #expect(QQMusicAuth.identityCandidates(from: ["pgv_pvid": "x"]) == ["0"])
+    }
+
+    @Test func loginValidationSeparatesMissingAccountFromMissingCredential() {
+        #expect(QQMusicAuth.loginValidationMessage([:]) != nil)
+        // An account id without any music credential is still unusable…
+        #expect(QQMusicAuth.loginValidationMessage(["uin": "o12345", "pt2gguin": "o12345"]) != nil)
+        // …but uin + any music credential is a valid QQ login.
+        #expect(QQMusicAuth.loginValidationMessage(["uin": "o12345", "p_skey": "ps"]) == nil)
+        #expect(QQMusicAuth.loginValidationMessage(["wxuin": "998877", "wxskey": "s"]) == nil)
+        // "0" is QQ's "not signed in" placeholder, never a usable account.
+        #expect(QQMusicAuth.loginValidationMessage(["uin": "0", "p_skey": "ps"]) != nil)
+    }
+
+    @Test func pastedCookieHeadersParseIntoAJar() {
+        let jar = QQMusicAuth.parseCookieHeader("uin=o12345; qqmusic_key=Q_H_L_key; bad; empty=; p_skey=a=b")
+        #expect(jar["uin"] == "o12345")
+        #expect(jar["qqmusic_key"] == "Q_H_L_key")
+        #expect(jar["p_skey"] == "a=b") // values may legally contain '='
+        #expect(jar["empty"] == nil)
+        #expect(jar.count == 3)
+    }
+
+    @Test func nicknameFallsBackToPtnickThenTheAccountID() {
+        #expect(QQMusicAuth.fallbackNickname(["ptnick_1": "%E5%B0%8F%E6%98%8E"]) == "小明")
+        #expect(QQMusicAuth.fallbackNickname(["nick": "阿豆"]) == "阿豆")
+        #expect(QQMusicAuth.fallbackNickname(["uin": "o12345"]) == "QQ音乐用户 12345")
+        #expect(QQMusicAuth.fallbackNickname(["pgv_pvid": "x"]) == "QQ音乐用户")
+    }
+
+    @Test func userPlaylistRowsNormaliseAndDropQZoneFolders() throws {
+        // Legacy `fcg_user_created_diss` shape.
+        let created = try #require(QQMusicAPI.userPlaylistSummary(from: [
+            "dissid": 7302685378, "diss_name": "我的最爱",
+            "diss_cover": "https://y.gtimg.cn/music/photo_new/T300R800x800M000001.jpg",
+            "song_cnt": 42, "dirid": 0,
+        ]))
+        #expect(created.name == "我的最爱")
+        #expect(created.mid == "7302685378")
+        #expect(created.trackCount == 42)
+        #expect(created.coverURL?.hasPrefix("https://y.gtimg.cn/") == true)
+
+        // Official-gateway shape with `tid` instead of `dissid`.
+        let official = try #require(QQMusicAPI.userPlaylistSummary(from: [
+            "tid": 8150218364, "dissname": "收藏", "imgurl": "http://y.gtimg.cn/a.jpg",
+        ]))
+        #expect(official.mid == "8150218364")
+
+        // QZone folder rows have a dirid but no real playlist id — dropped.
+        #expect(QQMusicAPI.userPlaylistSummary(from: [
+            "dirid": 3, "diss_name": "QQ空间背景音乐", "logo": "https://x/y.jpg",
+        ]) == nil)
+        // And anything self-identifying as a QZone/背景音乐 playlist is dropped too.
+        #expect(QQMusicAPI.userPlaylistSummary(from: [
+            "dissid": 100, "dissname": "QQ空间背景音乐",
+        ]) == nil)
+    }
+}

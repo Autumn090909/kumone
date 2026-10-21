@@ -5,6 +5,8 @@ struct SidebarView: View {
     @Binding var showLogin: Bool
 
     @EnvironmentObject private var account: AccountStore
+    /// Observed because the 「音乐平台」section below reflects and mutates it.
+    @ObservedObject private var catalog = CatalogStore.shared
     @State private var showNewPlaylist = false
     @State private var newPlaylistName = ""
     @State private var avatarImage: PlatformImage?
@@ -22,6 +24,36 @@ struct SidebarView: View {
                 row(.explore, title: "精选", icon: "square.grid.2x2.fill")
                 row(.fm, title: "漫游", icon: "wave.3.right.circle.fill")
             }
+
+#if os(iOS)
+            // iPad 上 `HomeView` 那个 `.toolbar` 平台切换**不会渲染** ——
+            // 和搜索/设置当初的情况完全一样（见本文件 footer 的注释，#59/#67）。
+            // 所以平台切换必须在这里给一个恒定可见的入口，否则 iPad 上
+            // 既切不到 QQ 曲库、也看不到 QQ 主页。
+            Section("音乐平台") {
+                ForEach(TrackPlatform.allCases, id: \.self) { platform in
+                    Button {
+                        catalog.setPlatform(platform)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(platform.displayName)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                            if catalog.platform == platform {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Theme.accent)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+#endif
 
             if account.hasAuthCookie {
                 Section("我的") {
@@ -66,6 +98,12 @@ struct SidebarView: View {
                     }
                 }
             }
+
+            // QQ 音乐是独立账号，不跟随网易云的登录状态，所以放在上面那个
+            // `if account.hasAuthCookie` 之外。iPhone 在「我的」页有这一块，
+            // 而 iPad/macOS 走的正是本侧边栏 —— 早先这里什么都没有，
+            // iPad 上等于完全没有 QQ 登录入口。
+            QQMusicAccountSection(compact: true)
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)

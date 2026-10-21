@@ -13,6 +13,15 @@ name: iOS IPA
 # macOS 15.6 or newer. Older macOS cannot build this project at all. Running the
 # build here means a contributor on any OS can still produce an installable IPA.
 #
+# WHAT THIS FORK CHANGES — CarPlay is available, opt-in.
+#
+# The CarPlay stack (Sources/Kumone/Core/CarPlay/ + CarPlaySceneDelegate) is
+# upstream code and is left untouched. All this fork changes is the build
+# configuration: an opt-in overlay that adds the Info.plist scene declaration,
+# plus an ldid step that injects `com.apple.developer.carplay-audio` into the
+# executable after the build. Both are needed; either one alone fails silently,
+# and only on a head unit. Off by default — see DEFAULT_CARPLAY below.
+#
 # HOW TO TRIGGER IT IN A FORK
 #
 #   Two ways in, deliberately, because the obvious one has a trap:
@@ -37,12 +46,17 @@ on:
       version:
         description: "Version baked into the IPA (CFBundleShortVersionString)"
         required: false
-        default: "0.3.20-custom"
+        default: "0.3.22-ipad-qq"
       run_tests:
         description: "Compile and run the custom-source tests first (fast; never blocks the IPA)"
         type: boolean
         required: false
         default: true
+      carplay:
+        description: "Ship CarPlay (Info.plist scene + com.apple.developer.carplay-audio, ldid-injected after the build)"
+        type: boolean
+        required: false
+        default: false
 
   # Route 1 above. Path-filtered so an unrelated push (a README tweak, an
   # upstream merge) does not kick off a 20-minute macOS build.
@@ -79,7 +93,25 @@ env:
 
   # Used when the run came from a push (no `inputs`), or when the caller left
   # the field blank.
-  DEFAULT_VERSION: "0.3.20-custom"
+  DEFAULT_VERSION: "0.3.22-ipad-qq"
+
+  # CarPlay defaults to OFF again.
+  #
+  # The CarPlay path below is complete and verified as far as CI can verify it,
+  # but it is a *different* change from the iPad UI work: it adds a scene
+  # declaration to Info.plist and an entitlement to the executable. Shipping both
+  # in one build would make a launch failure impossible to attribute, and CarPlay
+  # does not exist on iPad anyway — so this build stays CarPlay-free and CarPlay
+  # is one checkbox away (manual run → `carplay`).
+  #
+  # How it works when enabled: TrollStore's README states that "the binaries
+  # inside an IPA can have arbitrary entitlements, fakesign them with ldid and
+  # the entitlements you want (ldid -S <entitlements>) and TrollStore will
+  # preserve the entitlements when resigning them with the fake root
+  # certificate on installation." CODE_SIGNING_ALLOWED=NO means Xcode never
+  # applies CODE_SIGN_ENTITLEMENTS, so the entitlement has to be injected after
+  # the build — see the ldid step below.
+  DEFAULT_CARPLAY: "0"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -165,19 +197,76 @@ jobs:
           # DEFAULT_VERSION is a workflow-level env var, so it is already in this
           # step's environment. On a push-triggered run there is no `inputs` at
           # all, and this is what fills the gap.
-          V="${IN_VERSION:-${DEFAULT_VERSION:-0.3.20-custom}}"
+          V="${IN_VERSION:-${DEFAULT_VERSION:-0.3.22-ipad-qq}}"
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Building version: $V"
 
-      # Leaves the project in its default, CarPlay-free configuration. Cheap and
-      # explicit: it guarantees no stray capability overlay is in play, and
-      # CarPlay's entitlement is restricted, so an unsigned build must not carry
-      # it anyway. `bash <script>` rather than `./<script>` so a lost exec bit
-      # cannot break the run.
-      - name: Configure iOS build
+      # Capability switches have to be resolved once, because a push-triggered run
+      # has no `inputs` object at all while a manual one does.
+      - name: Resolve capability switches
+        id: caps
+        env:
+          IN_CARPLAY: ${{ inputs.carplay }}
         run: |
           set -euo pipefail
-          bash Scripts/configure-ios.sh
+          # NOTE: the runner's /bin/bash is 3.2, so no ${VAR,,} here.
+          CP="$(printf '%s' "${IN_CARPLAY:-${DEFAULT_CARPLAY:-0}}" | tr '[:lower:]' '[:upper:]')"
+          case "$CP" in
+            TRUE|1|YES|ON) echo "carplay=1" >> "$GITHUB_OUTPUT" ;;
+            *) echo "carplay=0" >> "$GITHUB_OUTPUT" ;;
+          esac
+          echo "CarPlay input resolved to: $CP"
+
+      # Upstream keeps CarPlay behind an opt-in overlay because
+      # `com.apple.developer.carplay-audio` is a restricted entitlement which a
+      # normally-signed build cannot carry without an Apple-approved CarPlay
+      # application. This artifact is UNSIGNED, so the overlay is safe here: the
+      # entitlement travels in the binary via ldid (next step) and TrollStore
+      # preserves it — something a certificate-based sideload cannot do.
+      - name: Configure iOS build
+        env:
+          CARPLAY: ${{ steps.caps.outputs.carplay }}
+        run: |
+          set -euo pipefail
+          if [ "$CARPLAY" = "1" ]; then
+            bash Scripts/configure-ios.sh --carplay
+          else
+            bash Scripts/configure-ios.sh
+          fi
+
+      - name: Install ldid and prove it works (CarPlay builds only)
+        if: ${{ steps.caps.outputs.carplay == '1' }}
+        env:
+          IOS_APP: ${{ env.IOS_APP_NAME }}
+        run: |
+          set -euo pipefail
+          if command -v ldid >/dev/null 2>&1; then
+            echo "ldid already present: $(command -v ldid)"
+          else
+            HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ldid
+          fi
+          command -v ldid >/dev/null 2>&1 || {
+            echo "::error::ldid is not on PATH after installing it"
+            exit 1
+          }
+
+          # A functional probe, not `ldid -v`: this runs the exact operation the
+          # packaging step depends on — inject an entitlement blob, read it back —
+          # against a throwaway copy of a real Mach-O. A wrong or broken ldid then
+          # fails here, before the 20-minute compile is paid for.
+          ENT="ios/Config/Generated/$IOS_APP-CarPlay.entitlements"
+          test -f "$ENT" || {
+            echo "::error::$ENT is missing — Scripts/configure-ios.sh --carplay did not run"
+            exit 1
+          }
+          PROBE="$(mktemp -d)/probe"
+          cp /bin/ls "$PROBE"
+          ldid -S"$ENT" "$PROBE"
+          ldid -e "$PROBE" | grep -q 'com.apple.developer.carplay-audio' || {
+            echo "::error::ldid ran but com.apple.developer.carplay-audio did not round-trip"
+            exit 1
+          }
+          echo "ldid functional probe passed ✔"
 
       - name: Build unsigned iOS app
         env:
@@ -192,6 +281,40 @@ jobs:
             MARKETING_VERSION="$VERSION" \
             CURRENT_PROJECT_VERSION="$(git rev-list --count HEAD)" \
             build
+
+      # The one step Xcode cannot do for an unsigned build. With
+      # CODE_SIGNING_ALLOWED=NO, CODE_SIGN_ENTITLEMENTS is never applied, so the
+      # app would otherwise ship the CarPlay scene declaration in Info.plist
+      # while carrying no entitlement to match — and CarPlay would silently
+      # ignore the app. ldid "fakesigns" the executable with the entitlement,
+      # which is exactly the procedure TrollStore documents for arbitrary
+      # entitlements. TrollStore re-signs the app on install and keeps this blob.
+      - name: Embed the CarPlay entitlement (ldid fakesign)
+        if: ${{ steps.caps.outputs.carplay == '1' }}
+        env:
+          IOS_APP: ${{ env.IOS_APP_NAME }}
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/ios-dd/Build/Products/Release-iphoneos/$IOS_APP.app"
+          ENT="ios/Config/Generated/$IOS_APP-CarPlay.entitlements"
+
+          test -f "$ENT" || {
+            echo "::error::$ENT is missing — Scripts/configure-ios.sh --carplay did not run"
+            exit 1
+          }
+          command -v ldid >/dev/null 2>&1 || {
+            echo "::error::ldid is missing — the 'Install ldid' step should have run first"
+            exit 1
+          }
+
+          ldid -S"$ENT" "$APP/$IOS_APP"
+
+          echo "--- entitlements embedded in $IOS_APP ---"
+          ldid -e "$APP/$IOS_APP"
+          if ! ldid -e "$APP/$IOS_APP" | grep -q 'com.apple.developer.carplay-audio'; then
+            echo "::error::com.apple.developer.carplay-audio did not stick to $IOS_APP"
+            exit 1
+          fi
 
       - name: Package into an .ipa
         env:
@@ -221,6 +344,32 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" || true
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist" || true
 
+          # CarPlay is asserted here because it cannot be asserted on a car from
+          # CI. Both halves have to be present — the Info.plist scene AND the
+          # entitlement in the executable — and either one silently degrading is
+          # only visible on a head unit, which is the one place we cannot look.
+          if [ "${{ steps.caps.outputs.carplay }}" = "1" ]; then
+            /usr/libexec/PlistBuddy -c 'Print :UISupportsCarPlay' "$APP/Info.plist" >/dev/null || {
+              echo "::error::UISupportsCarPlay missing from the packaged Info.plist"
+              exit 1
+            }
+            CP_SCENE="$(/usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest:UISceneConfigurations:CPTemplateApplicationSceneSessionRoleApplication:0:UISceneDelegateClassName' "$APP/Info.plist" 2>/dev/null || true)"
+            case "$CP_SCENE" in
+              *CarPlaySceneDelegate)
+                echo "CarPlay scene delegate: $CP_SCENE" ;;
+              *)
+                echo "::error::CarPlay scene delegate missing or wrong in Info.plist (got '${CP_SCENE:-<empty>}')"
+                exit 1 ;;
+            esac
+            ldid -e "$APP/$IOS_APP" | grep -q 'com.apple.developer.carplay-audio' || {
+              echo "::error::com.apple.developer.carplay-audio missing from the packaged executable"
+              exit 1
+            }
+            echo "CarPlay: scene + entitlement both present ✔"
+          else
+            echo "CarPlay: disabled for this build (upstream default)"
+          fi
+
           mkdir -p "$RUNNER_TEMP/payload/Payload"
           cp -R "$APP" "$RUNNER_TEMP/payload/Payload/"
 
@@ -238,6 +387,7 @@ jobs:
             echo "bundle:   $(basename "$APP")"
             echo "bundle-id: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2>/dev/null || echo '?')"
             echo "version:  $VERSION"
+            echo "carplay:  ${{ steps.caps.outputs.carplay }}"
             echo "commit:   $(git rev-parse HEAD)"
             echo "branch:   $GITHUB_REF_NAME"
             echo "xcode:    $(xcodebuild -version | head -1)"
